@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const configuredApi = import.meta.env.VITE_API_URL
+const API = import.meta.env.PROD
+  ? (configuredApi && !configuredApi.includes('localhost') ? configuredApi : 'https://adiccion-al-casino-web-backend.onrender.com')
+  : (configuredApi || 'http://localhost:8080')
 const STAKES = [300, 800, 2000]
 const gameNames = { COIN: 'Moneda y probabilidad', PUZZLE: 'Carrera de rompecabezas', WORD: 'Palabra o acertijo' }
 
