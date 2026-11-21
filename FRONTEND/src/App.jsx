@@ -70,10 +70,60 @@ function App() {
   const [adminReports, setAdminReports] = useState([])
   const [voiceOn, setVoiceOn] = useState(false)
   const [blocked, setBlocked] = useState(false)
+  const [backendStatus, setBackendStatus] = useState('checking')
+  const [backendRetry, setBackendRetry] = useState(0)
+  const [backendWaitSeconds, setBackendWaitSeconds] = useState(0)
+  const backendWaitStarted = useRef(Date.now())
   const voiceRef = useRef({ pc: null, stream: null, last: new Date(0).toISOString(), pendingCandidates: [] })
   const refreshRef = useRef(null)
   const chatCursor = useRef(null)
   const puzzleServerState = useRef('')
+
+  useEffect(() => {
+    if (token) return undefined
+    setBackendWaitSeconds(Math.floor((Date.now() - backendWaitStarted.current) / 1000))
+    setBackendStatus('checking')
+    let cancelled = false
+    let timeoutId
+    let retryTimer
+    let connected = false
+
+    const timer = window.setInterval(() => {
+      setBackendWaitSeconds(Math.floor((Date.now() - backendWaitStarted.current) / 1000))
+    }, 1000)
+
+    async function checkBackend() {
+      setBackendStatus('checking')
+      const controller = new AbortController()
+      timeoutId = window.setTimeout(() => controller.abort(), 15000)
+      try {
+        const response = await fetch(`${API}/api/games`, { signal: controller.signal })
+        if (!response.ok) throw new Error(`El servidor respondió ${response.status}`)
+        const catalog = await response.json()
+        if (!cancelled) {
+          setGames(catalog)
+          setBackendStatus('ready')
+          connected = true
+        }
+      } catch {
+        if (!cancelled) setBackendStatus('waiting')
+      } finally {
+        window.clearTimeout(timeoutId)
+        if (!cancelled && !connected) {
+          // Retry after a short pause; the elapsed timer reflects actual wait time.
+          retryTimer = window.setTimeout(() => { if (!cancelled) void checkBackend() }, 3000)
+        }
+      }
+    }
+
+    void checkBackend()
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.clearTimeout(timeoutId)
+      window.clearTimeout(retryTimer)
+    }
+  }, [token, backendRetry])
 
   const run = useCallback(async (fn) => {
     setError('')
@@ -172,7 +222,9 @@ function App() {
   }, [token, match?.id, match?.status])
 
   async function authenticate(event) {
-    event.preventDefault(); setBusy(true)
+    event.preventDefault()
+    if (backendStatus !== 'ready') return
+    setBusy(true)
     const form = new FormData(event.currentTarget)
     const body = Object.fromEntries(form.entries())
     const result = await run(() => request(`/api/auth/${authMode === 'login' ? 'login' : 'register'}`, { method: 'POST', body: JSON.stringify(body) }))
@@ -282,6 +334,8 @@ function App() {
     setToken('')
     setAccount(null)
     setMatch(null)
+    backendWaitStarted.current = Date.now()
+    setBackendWaitSeconds(0)
   }
 
   function startVoice() {
@@ -320,11 +374,17 @@ function App() {
   if (!token) return (
     <main className="auth-shell">
       <section className="auth-brand"><div className="brand-mark">◎</div><span className="eyebrow">SIMULADOR CON CRÉDITOS FICTICIOS</span><h1>Juegos con<br />créditos ficticios.</h1><p>Juegos entre personas con créditos ficticios. Sin dinero real.</p><div className="auth-note">Este espacio no sustituye ayuda profesional. Tú decides cuándo participar.</div></section>
-      <form className="auth-card" onSubmit={authenticate}><span className="eyebrow">{authMode === 'login' ? 'QUÉ BUENO VERTE' : 'EMPECEMOS'}</span><h2>{authMode === 'login' ? 'Ingresa a tu cuenta' : 'Crea tu cuenta'}</h2><p className="muted">{authMode === 'login' ? 'Continúa desde donde lo dejaste.' : 'Al registrarte recibes 10.000 créditos ficticios.'}</p>
-        {authMode === 'register' && <label>Nombre<input name="name" required maxLength="80" /></label>}
-        <label>Gmail<input name="email" type="email" required autoComplete="email" /></label><label>Contraseña<input name="password" type="password" required minLength="8" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} /></label>
-        {authMode === 'register' && <label>¿Cómo conociste el juego?<input name="howKnown" required maxLength="300" /></label>}
-        {error && <p className="error">{error}</p>}<button className="primary wide" disabled={busy}>{busy ? 'Un momento…' : authMode === 'login' ? 'Ingresar' : 'Crear cuenta'}</button><button className="link-button" type="button" onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setError('') }}>{authMode === 'login' ? 'Crear una cuenta' : 'Ya tengo cuenta'}</button>
+      <form className="auth-card" onSubmit={authenticate}>
+        <div className={`backend-status ${backendStatus === 'ready' ? 'is-ready' : ''}`} role="status" aria-live="polite">
+          {backendStatus === 'ready' ? <span className="backend-status-icon">✓</span> : <span className="backend-spinner" aria-hidden="true" />}
+          <div><strong>{backendStatus === 'ready' ? 'Servidor listo' : 'Esperando a que el servidor despierte…'}</strong><span>{backendStatus === 'ready' ? 'Ya puedes ingresar o crear tu cuenta.' : `Conectando · ${formatTime(backendWaitSeconds)}`}</span></div>
+          {backendStatus !== 'ready' && <button type="button" className="backend-retry" onClick={() => setBackendRetry((value) => value + 1)}>Reintentar</button>}
+        </div>
+        <span className="eyebrow">{authMode === 'login' ? 'QUÉ BUENO VERTE' : 'EMPECEMOS'}</span><h2>{authMode === 'login' ? 'Ingresa a tu cuenta' : 'Crea tu cuenta'}</h2><p className="muted">{authMode === 'login' ? 'Continúa desde donde lo dejaste.' : 'Al registrarte recibes 10.000 créditos ficticios.'}</p>
+        {authMode === 'register' && <label>Nombre<input name="name" required maxLength="80" disabled={backendStatus !== 'ready'} /></label>}
+        <label>Gmail<input name="email" type="email" required autoComplete="email" disabled={backendStatus !== 'ready'} /></label><label>Contraseña<input name="password" type="password" required minLength="8" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} disabled={backendStatus !== 'ready'} /></label>
+        {authMode === 'register' && <label>¿Cómo conociste el juego?<input name="howKnown" required maxLength="300" disabled={backendStatus !== 'ready'} /></label>}
+        {error && <p className="error">{error}</p>}<button className="primary wide" disabled={busy || backendStatus !== 'ready'}>{busy ? 'Un momento…' : authMode === 'login' ? 'Ingresar' : 'Crear cuenta'}</button><button className="link-button" type="button" disabled={backendStatus !== 'ready'} onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setError('') }}>{authMode === 'login' ? 'Crear una cuenta' : 'Ya tengo cuenta'}</button>
       </form>
     </main>
   )
