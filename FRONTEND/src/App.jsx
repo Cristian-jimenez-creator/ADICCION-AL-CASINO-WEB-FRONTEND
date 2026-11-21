@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 
 const configuredApi = import.meta.env.VITE_API_URL
@@ -67,8 +67,12 @@ function App() {
   const [restUntil, setRestUntil] = useState(0)
   const [now, setNow] = useState(Date.now())
   const [wordAnswer, setWordAnswer] = useState('')
+  const [wordFeedback, setWordFeedback] = useState('')
+  const [wordSubmitting, setWordSubmitting] = useState(false)
+  const [coinSubmitting, setCoinSubmitting] = useState(false)
   const [puzzle, setPuzzle] = useState([])
   const [draggedIndex, setDraggedIndex] = useState(null)
+  const [selectedPuzzleIndex, setSelectedPuzzleIndex] = useState(null)
   const [triggerOpen, setTriggerOpen] = useState(false)
   const [adminReports, setAdminReports] = useState([])
   const [voiceOn, setVoiceOn] = useState(false)
@@ -81,6 +85,8 @@ function App() {
   const refreshRef = useRef(null)
   const chatCursor = useRef(null)
   const puzzleServerState = useRef('')
+  const puzzleGridRef = useRef(null)
+  const puzzleBeforePositions = useRef(null)
 
   useEffect(() => {
     if (token) return undefined
@@ -182,6 +188,8 @@ function App() {
         if (updated.status !== 'ACTIVE') return
         const boardState = JSON.stringify(updated.myPuzzleBoard || [])
         if (boardState !== puzzleServerState.current) {
+          const grid = puzzleGridRef.current
+          puzzleBeforePositions.current = grid ? new Map(Array.from(grid.querySelectorAll('[data-piece-id]')).map((tile) => [tile.dataset.pieceId, tile.getBoundingClientRect()])) : null
           puzzleServerState.current = boardState
           setPuzzle(updated.myPuzzleBoard || [])
         }
@@ -196,6 +204,33 @@ function App() {
     refreshRef.current = window.setInterval(refresh, 1200)
     return () => { alive = false; window.clearInterval(refreshRef.current) }
   }, [token, match?.id, match?.status, loadAccount])
+
+  useLayoutEffect(() => {
+    const before = puzzleBeforePositions.current
+    const grid = puzzleGridRef.current
+    if (!before || !grid) return
+    const tiles = Array.from(grid.querySelectorAll('[data-piece-id]'))
+    for (const tile of tiles) {
+      const oldRect = before.get(tile.dataset.pieceId)
+      if (!oldRect) continue
+      const nextRect = tile.getBoundingClientRect()
+      const dx = oldRect.left - nextRect.left
+      const dy = oldRect.top - nextRect.top
+      if (!dx && !dy) continue
+      tile.style.transition = 'none'
+      tile.style.transform = `translate(${dx}px, ${dy}px)`
+      requestAnimationFrame(() => {
+        tile.style.transition = 'transform 260ms cubic-bezier(.2,.75,.25,1)'
+        tile.style.transform = ''
+      })
+      window.setTimeout(() => { tile.style.transition = ''; tile.style.zIndex = '' }, 280)
+    }
+    puzzleBeforePositions.current = null
+  }, [puzzle])
+
+  useEffect(() => {
+    setWordFeedback('')
+  }, [match?.wordRound])
 
   useEffect(() => {
     if (match?.status === 'FINISHED') {
@@ -266,12 +301,29 @@ function App() {
     if (result) setMatch(result)
   }
 
+  async function chooseCoin(side) {
+    if (coinSubmitting) return
+    setCoinSubmitting(true)
+    await updateMatch('coin', { side })
+    setCoinSubmitting(false)
+  }
+
   async function submitPuzzle() { const result = await run(() => request(`/api/challenges/${match.id}/puzzle`, { token, method: 'PUT', body: JSON.stringify({ pieces: puzzle }) })); if (result) setMatch(result) }
 
   async function submitWord(event) {
     event.preventDefault()
+    if (wordSubmitting || !wordAnswer.trim()) return
+    setWordSubmitting(true)
+    setWordFeedback('')
     const result = await run(() => request(`/api/challenges/${match.id}/word-answer`, { token, method: 'POST', body: JSON.stringify({ round: match.wordRound, answer: wordAnswer }) }))
-    if (result) { setMatch(result.challenge); setWordAnswer(''); if (result.roundExpired) setNotice('Se agotaron los 35 segundos. Comienza el siguiente reto.'); else if (!result.correct) setNotice('Esa respuesta no es correcta. Puedes volver a intentarlo mientras corre el tiempo.'); }
+    if (result) {
+      setMatch(result.challenge)
+      setWordAnswer('')
+      if (result.correct) setWordFeedback('Respuesta correcta. La partida terminó.')
+      else if (result.roundExpired) setWordFeedback('Se terminó el tiempo. Ya comenzó otro reto.')
+      else setWordFeedback('No coincide todavía. Puedes intentarlo otra vez.')
+    }
+    setWordSubmitting(false)
   }
 
   async function sendMessage(event) {
@@ -317,13 +369,28 @@ function App() {
     } else if (match?.status === 'WAITING') await cancelChallenge()
   }
 
-  function movePiece(index) {
-    const columns = match?.puzzleColumns || 1
-    const target = index % columns < columns - 1 ? index + 1 : index - 1
-    if (target < 0 || target >= puzzle.length) return
+  function swapPuzzlePieces(first, second) {
+    if (first === second || first < 0 || second < 0 || first >= puzzle.length || second >= puzzle.length) return
+    const grid = puzzleGridRef.current
+    puzzleBeforePositions.current = grid ? new Map(Array.from(grid.querySelectorAll('[data-piece-id]')).map((tile) => [tile.dataset.pieceId, tile.getBoundingClientRect()])) : null
     const copy = [...puzzle]
-    ;[copy[index], copy[target]] = [copy[target], copy[index]]
+    ;[copy[first], copy[second]] = [copy[second], copy[first]]
     setPuzzle(copy)
+  }
+
+  function movePiece(index) {
+    if (selectedPuzzleIndex === null) {
+      setSelectedPuzzleIndex(index)
+      return
+    }
+    if (selectedPuzzleIndex !== index) swapPuzzlePieces(selectedPuzzleIndex, index)
+    setSelectedPuzzleIndex(null)
+  }
+
+  function getPuzzleProgress(board = []) {
+    const sourceIndices = match?.puzzlePieceSourceIndices || {}
+    if (!board.length) return 0
+    return Math.round((board.filter((piece, index) => sourceIndices[piece] === index).length / board.length) * 100)
   }
 
   async function signOut() {
@@ -370,6 +437,8 @@ function App() {
   }
 
   const secondsLeft = restUntil ? Math.max(0, Math.ceil((restUntil - now) / 1000)) : 0
+  const wordSecondsLeft = match?.wordDeadline ? Math.max(0, Math.ceil((new Date(match.wordDeadline).getTime() - now) / 1000)) : 35
+  const wordTimerProgress = Math.min(1, Math.max(0, wordSecondsLeft / 35))
   const videoUrl = import.meta.env.VITE_INFORMATIVE_VIDEO_URL
   const activeSeconds = account?.activePlaySeconds || 0
   const restSeconds = account?.restUntil ? Math.max(0, Math.ceil((new Date(account.restUntil).getTime() - now) / 1000)) : 0
@@ -401,11 +470,84 @@ function App() {
           <div className="match-main"><div className="section-heading"><button className="back-button" onClick={leaveMatch}>← Salir de partida</button><span className={`status-pill ${match.status.toLowerCase()}`}>{match.status === 'WAITING' ? 'Esperando rival' : match.status === 'ACTIVE' ? 'Partida activa' : 'Partida terminada'}</span></div><h1>{gameNames[match.gameType]}</h1><p className="muted">Apuesta por jugador: <strong>{match.stake.toLocaleString('es-CO')} créditos</strong></p>
             {match.status === 'WAITING' && <div className="waiting-card"><div className="pulse-dot"/><h2>Tu reto está en la fila</h2><p>Cuando alguien lo acepte con la misma apuesta, comenzará la partida y se descontarán los créditos.</p><button className="secondary" onClick={cancelChallenge}>Cancelar reto</button></div>}
             {match.status === 'ACTIVE' && <><div className="versus"><div><span>TÚ</span><strong>{account?.name}</strong></div><span className="versus-mark">VS</span><div><span>CONTRINCANTE</span><strong>{match.creatorId === account.id ? match.opponentName : match.creatorName}</strong></div></div>
-              {match.gameType === 'COIN' && <div className="game-panel"><div className="coin-icon">◉</div><h2>Elige cara o sello</h2><p>Cada resultado tiene 50 % de probabilidad. El primer lado elegido corresponde a quien lo elige.</p><div className="choice-row"><button className="choice" onClick={() => updateMatch('coin', { side: 'CARA' })}>Cara</button><button className="choice" onClick={() => updateMatch('coin', { side: 'SELLO' })}>Sello</button></div></div>}
-              {match.gameType === 'PUZZLE' && <div className="game-panel"><h2>{match.puzzleTitle || 'Rompecabezas'}</h2><p>Arrastra las piezas de tu tablero para ordenarlas. El otro tablero muestra el avance del contrincante.</p><div className="race-boards"><div><h3>Tu tablero</h3><div className="puzzle-grid" style={{ '--cols': match.puzzleColumns }}>{puzzle.map((piece,index) => <button draggable key={`${piece}-${index}`} aria-label={`Pieza ${piece}`} style={{ backgroundImage: match.puzzleImageUrl ? `url(${match.puzzleImageUrl})` : 'none', backgroundSize: `${match.puzzleColumns * 100}% ${match.puzzleRows * 100}%`, backgroundPosition: `${((match.puzzlePieceSourceIndices?.[piece] % match.puzzleColumns) / (match.puzzleColumns - 1)) * 100}% ${Math.floor(match.puzzlePieceSourceIndices?.[piece] / match.puzzleColumns) / (match.puzzleRows - 1) * 100}%` }} onClick={() => movePiece(index)} onDragStart={() => setDraggedIndex(index)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (draggedIndex !== null && draggedIndex !== index) { const copy=[...puzzle]; [copy[draggedIndex],copy[index]]=[copy[index],copy[draggedIndex]]; setPuzzle(copy) } setDraggedIndex(null) }}><span className="sr-only">{piece}</span></button>)}</div><button className="primary" onClick={submitPuzzle}>Enviar mi tablero</button></div><div><h3>Tablero del contrincante</h3><div className="puzzle-grid opponent-grid" style={{ '--cols': match.puzzleColumns }}>{(match.opponentPuzzleBoard || []).map((piece,index) => <div key={`${piece}-${index}`} aria-label={`Pieza ${piece}`} style={{ backgroundImage: match.puzzleImageUrl ? `url(${match.puzzleImageUrl})` : "none", backgroundSize: `${match.puzzleColumns * 100}% ${match.puzzleRows * 100}%`, backgroundPosition: `${((match.puzzlePieceSourceIndices?.[piece] % match.puzzleColumns) / (match.puzzleColumns - 1)) * 100}% ${Math.floor(match.puzzlePieceSourceIndices?.[piece] / match.puzzleColumns) / (match.puzzleRows - 1) * 100}%` }}><span className="sr-only">{piece}</span></div>)}</div></div></div></div>}
-              {match.gameType === 'WORD' && <div className="game-panel"><span className="eyebrow">RETO {match.wordRound}</span><h2>{match.wordPrompt}</h2><p>Tiempo para responder: {Math.max(0,Math.ceil((new Date(match.wordDeadline).getTime()-now)/1000))} segundos</p><form className="answer-form" onSubmit={submitWord}><input value={wordAnswer} onChange={(event) => setWordAnswer(event.target.value)} placeholder="Escribe tu respuesta" maxLength="200" required /><button className="primary">Responder</button></form><p className="small-note">Si nadie acierta, aparece otro reto y la partida continúa.</p></div>}
+              {match.gameType === 'COIN' && (
+                <div className="game-panel coin-stage">
+                  <div className="coin-arena" aria-live="polite">
+                    <span className="coin-shadow" aria-hidden="true" />
+                    <div className="coin-icon coin-idle" aria-hidden="true"><span>?</span></div>
+                  </div>
+                  <h2>Elige cara o sello</h2>
+                  <p>Ambas opciones tienen 50 % de probabilidad. Al elegir, se lanza una moneda virtual y el resultado aparece para los dos.</p>
+                  <div className="choice-row">
+                    <button type="button" className="choice" disabled={coinSubmitting} onClick={() => chooseCoin('CARA')}>Cara</button>
+                    <button type="button" className="choice" disabled={coinSubmitting} onClick={() => chooseCoin('SELLO')}>Sello</button>
+                  </div>
+                  {coinSubmitting && <p className="game-hint" role="status">Lanzando la moneda…</p>}
+                </div>
+              )}
+              {match.gameType === 'PUZZLE' && (
+                <div className="game-panel puzzle-stage">
+                  <span className="eyebrow">CARRERA EN CURSO</span>
+                  <h2>{match.puzzleTitle || 'Rompecabezas'}</h2>
+                  <p>Ordena las piezas de tu tablero. Arrastra una pieza a su lugar o selecciónala y luego toca su destino.</p>
+                  <div className="race-boards">
+                    <div className="race-board">
+                      <div className="race-board-heading"><h3>Tu tablero</h3><strong>{getPuzzleProgress(puzzle)}%</strong></div>
+                      <div className="puzzle-progress" aria-label={`Tu avance: ${getPuzzleProgress(puzzle)} por ciento`}><span style={{ width: `${getPuzzleProgress(puzzle)}%` }} /></div>
+                      <div ref={puzzleGridRef} className="puzzle-grid" style={{ '--cols': match.puzzleColumns }}>
+                        {puzzle.map((piece,index) => <button
+                          type="button"
+                          draggable
+                          key={piece}
+                          data-piece-id={piece}
+                          className={`puzzle-piece ${selectedPuzzleIndex === index ? 'is-selected' : ''} ${draggedIndex === index ? 'is-dragged' : ''}`}
+                          aria-label={`Pieza ${piece}, fila ${Math.floor(index / match.puzzleColumns) + 1}, columna ${index % match.puzzleColumns + 1}`}
+                          aria-pressed={selectedPuzzleIndex === index}
+                          style={{ backgroundImage: match.puzzleImageUrl ? `url(${match.puzzleImageUrl})` : 'none', backgroundSize: `${match.puzzleColumns * 100}% ${match.puzzleRows * 100}%`, backgroundPosition: `${((match.puzzlePieceSourceIndices?.[piece] % match.puzzleColumns) / (match.puzzleColumns - 1)) * 100}% ${Math.floor(match.puzzlePieceSourceIndices?.[piece] / match.puzzleColumns) / (match.puzzleRows - 1) * 100}%` }}
+                          onClick={() => movePiece(index)}
+                          onDragStart={() => { setDraggedIndex(index); setSelectedPuzzleIndex(null) }}
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={() => { if (draggedIndex !== null) swapPuzzlePieces(draggedIndex, index); setDraggedIndex(null) }}
+                          onDragEnd={() => setDraggedIndex(null)}
+                        ><span className="sr-only">{piece}</span></button>)}
+                      </div>
+                      <button className="primary" disabled={busy || puzzle.length === 0} onClick={submitPuzzle}>Enviar mi avance</button>
+                    </div>
+                    <div className="race-board opponent-board">
+                      <div className="race-board-heading"><h3>Contrincante</h3><strong>{getPuzzleProgress(match.opponentPuzzleBoard || [])}%</strong></div>
+                      <div className="puzzle-progress" aria-label={`Avance del contrincante: ${getPuzzleProgress(match.opponentPuzzleBoard || [])} por ciento`}><span style={{ width: `${getPuzzleProgress(match.opponentPuzzleBoard || [])}%` }} /></div>
+                      <div className="puzzle-grid opponent-grid" style={{ '--cols': match.puzzleColumns }}>
+                        {(match.opponentPuzzleBoard || []).map((piece,index) => <div key={piece} aria-label={`Pieza ${piece}`} style={{ backgroundImage: match.puzzleImageUrl ? `url(${match.puzzleImageUrl})` : 'none', backgroundSize: `${match.puzzleColumns * 100}% ${match.puzzleRows * 100}%`, backgroundPosition: `${((match.puzzlePieceSourceIndices?.[piece] % match.puzzleColumns) / (match.puzzleColumns - 1)) * 100}% ${Math.floor(match.puzzlePieceSourceIndices?.[piece] / match.puzzleColumns) / (match.puzzleRows - 1) * 100}%` }}><span className="sr-only">{piece}</span></div>)}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="game-hint" aria-live="polite">{selectedPuzzleIndex === null ? 'Tu avance se comparte al pulsar “Enviar mi avance”.' : 'Pieza seleccionada. Ahora elige dónde quieres colocarla.'}</p>
+                </div>
+              )}
+              {match.gameType === 'WORD' && (
+                <div className="game-panel word-stage" key={match.wordRound}>
+                  <span className="eyebrow">RETO {match.wordRound}</span>
+                  <div className="word-timer" role="img" aria-label={`Quedan ${wordSecondsLeft} segundos`}>
+                    <svg viewBox="0 0 100 100" aria-hidden="true">
+                      <circle className="word-timer-track" cx="50" cy="50" r="42" />
+                      <circle className="word-timer-progress" cx="50" cy="50" r="42" style={{ strokeDashoffset: 264 * (1 - wordTimerProgress) }} />
+                    </svg>
+                    <span><strong>{wordSecondsLeft}</strong><small>segundos</small></span>
+                  </div>
+                  <article className="word-card">
+                    <span>ACERTIJO</span>
+                    <h2>{match.wordPrompt}</h2>
+                  </article>
+                  <form className="answer-form" onSubmit={submitWord}>
+                    <input value={wordAnswer} onChange={(event) => setWordAnswer(event.target.value)} placeholder="Escribe tu respuesta" maxLength="200" required disabled={wordSubmitting || wordSecondsLeft === 0} />
+                    <button className="primary" disabled={wordSubmitting || wordSecondsLeft === 0}>{wordSubmitting ? 'Comprobando…' : 'Responder'}</button>
+                  </form>
+                  {wordFeedback && <p className="word-feedback" role="status">{wordFeedback}</p>}
+                  <p className="small-note">Ambos jugadores reciben el mismo acertijo. Si nadie responde a tiempo, aparece otro.</p>
+                </div>
+              )}
             </>}
-            {match.status === 'FINISHED' && <div className="result-card"><span className="eyebrow">RESULTADO</span><h2>{match.winnerId === account.id ? 'Ganaste la partida' : 'La partida terminó'}</h2><p>{match.gameType === 'COIN' ? `Salió ${match.coinResult?.toLowerCase()}. ` : ''}El saldo ficticio refleja el resultado de la partida.</p><div className="post-game"><div className="video-box">{videoUrl ? <video controls onEnded={completeRest} src={videoUrl} /> : <div><span>VIDEO INFORMATIVO</span><p>Falta agregar la URL del video.</p></div>}</div><div className="rest-box"><span className="eyebrow">PAUSA DE CINCO MINUTOS</span><strong>{videoComplete ? 'Pausa cancelada' : secondsLeft ? formatTime(secondsLeft) : '5:00'}</strong><p>{videoComplete ? 'Puedes continuar.' : 'Al terminar el video, la espera se cancela.'}</p><button className="primary" disabled={!videoComplete && secondsLeft > 0} onClick={() => { setMatch(null); setRestUntil(0); setChatMessages([]) }}>{!videoComplete && secondsLeft > 0 ? 'Descanso en curso' : 'Continuar'}</button></div></div></div>}
+            {match.status === 'FINISHED' && <div className="result-card"><span className="eyebrow">RESULTADO</span><h2>{match.winnerId === account.id ? 'Ganaste la partida' : 'La partida terminó'}</h2>{match.gameType === 'COIN' && <div className="coin-outcome" key={`${match.id}-${match.coinResult}`} aria-live="polite"><div className="coin-result-face"><span>{match.coinResult === 'CARA' ? 'CARA' : 'SELLO'}</span></div><p>Resultado del lanzamiento</p></div>}<p>{match.gameType === 'COIN' ? `Salió ${match.coinResult?.toLowerCase()}. ` : ''}El saldo ficticio refleja el resultado de la partida.</p><div className="post-game"><div className="video-box">{videoUrl ? <video controls onEnded={completeRest} src={videoUrl} /> : <div><span>VIDEO INFORMATIVO</span><p>Falta agregar la URL del video.</p></div>}</div><div className="rest-box"><span className="eyebrow">PAUSA DE CINCO MINUTOS</span><strong>{videoComplete ? 'Pausa cancelada' : secondsLeft ? formatTime(secondsLeft) : '5:00'}</strong><p>{videoComplete ? 'Puedes continuar.' : 'Al terminar el video, la espera se cancela.'}</p><button className="primary" disabled={!videoComplete && secondsLeft > 0} onClick={() => { setMatch(null); setRestUntil(0); setChatMessages([]) }}>{!videoComplete && secondsLeft > 0 ? 'Descanso en curso' : 'Continuar'}</button></div></div></div>}
           </div>
           {match.status === 'ACTIVE' && <aside className="match-side"><div className="chat-card"><div className="card-heading"><div><span className="eyebrow">DURANTE LA PARTIDA</span><h2>Chat</h2></div></div><div className="chat-messages">{chatMessages.map((item) => <div className={`chat-message ${item.senderId === account.id ? 'mine' : ''}`} key={item.id}><span>{item.senderId === account.id ? 'Tú' : 'Contrincante'}</span><p>{chatMuted && item.senderId !== account.id ? 'Mensaje silenciado' : item.body}</p></div>)}{chatMessages.length === 0 && <p className="empty-chat">Los mensajes de esta partida aparecerán aquí.</p>}</div><form className="chat-form" onSubmit={sendMessage}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Escribe un mensaje" maxLength="1000" /><button aria-label="Enviar mensaje">↑</button></form><div className="chat-actions"><button onClick={() => setChatMuted(!chatMuted)}>{chatMuted ? 'Mostrar texto' : 'Silenciar texto'}</button><button onClick={blocked ? undefined : blockOpponent}>{blocked ? 'Jugador bloqueado' : 'Bloquear'}</button><button onClick={() => report('TEXT')}>Reportar texto</button></div><div className="voice-row"><button disabled={blocked} className={voiceOn ? 'voice-active' : ''} onClick={() => voiceOn ? (stopVoice(),setVoiceOn(false)) : startVoice()}>{voiceOn ? 'Desactivar voz' : 'Activar voz'}</button><button onClick={() => setMuted(!muted)}>{muted ? 'Activar audio' : 'Silenciar audio'}</button><button onClick={() => report('VOICE')}>Reportar voz</button><audio id="remote-audio" autoPlay muted={muted} /></div>{voiceOn && <p className="small-note">La voz requiere permiso de micrófono y configuración ICE para conectar redes.</p>}</div></aside>}
         </section> : tab === 'reports' ? <section className="dashboard"><div className="section-heading"><div><span className="eyebrow">ADMINISTRACIÓN</span><h1>Reportes recibidos</h1></div><button className="secondary" onClick={() => setTab('games')}>Volver</button></div><div className="report-list">{adminReports.map((report) => <article className="report-row" key={report.id}><strong>{report.channel}</strong><span>Partida: {report.challengeId}</span><span>Reportado: {report.reportedPlayerId}</span><time>{new Date(report.createdAt).toLocaleString()}</time></article>)}{adminReports.length === 0 && <p className="empty-state">Todavía no hay reportes.</p>}</div></section> : <section className="dashboard"><div className="welcome-row"><div><span className="eyebrow">ESPACIO DE JUEGO</span><h1>Hola, {account?.name?.split(' ')[0]}.</h1><p>Elige una actividad y una apuesta en créditos ficticios.</p></div><div className="credit-card"><span>SALDO</span><strong>{(account?.credits || 0).toLocaleString('es-CO')}</strong><small>créditos ficticios</small></div></div><div className="limit-banner"><span>◷</span><p><strong>Hasta 90 minutos de partidas activas por cada periodo de 24 horas.</strong><br />Tiempo disponible: {formatTime(Math.max(0,5400-activeSeconds))}</p><button onClick={() => setTriggerOpen(true)}>Registrar desencadenante</button></div>{account?.restUntil && <div className="post-game"><div className="waiting-card rest-banner"><span className="eyebrow">DESCANSO DESPUÉS DE LA PARTIDA</span><h2>{restSeconds ? `Espera ${formatTime(restSeconds)}` : 'Puedes continuar'}</h2>{videoUrl && <video controls onEnded={completeRest} src={videoUrl} />}<p>{restSeconds ? 'Puedes ver el video informativo; si lo terminas, el descanso se cancela.' : 'El descanso terminó.'}</p><button className="primary" disabled={restSeconds > 0} onClick={() => setAccount({ ...account, restUntil: null })}>Continuar</button></div></div>}<div className="section-heading"><div><span className="eyebrow">ELIGE UNA ACTIVIDAD</span><h2>Juegos disponibles</h2></div>{account?.role === 'ADMIN' && <button className="secondary" onClick={showReports}>Ver reportes</button>}</div><div className="game-cards">{games.map((game,index) => <button className={`game-card game-${index}`} key={game.id} disabled={!game.available} onClick={() => setSelectedGame(game.id)}><span className="game-symbol">{['◉','▧','Aa'][index]}</span><span className="game-number">0{index+1}</span><h3>{game.name}</h3><p>{game.id === 'COIN' ? 'Elige cara o sello con igual probabilidad.' : game.id === 'PUZZLE' ? 'Resuelve la misma imagen que el contrincante.' : 'Responde antes que la otra persona.'}</p><span className="availability">{game.available ? 'Disponible' : 'Contenido por cargar'}</span></button>)}</div><div className="lobby-section"><div className="section-heading"><div><span className="eyebrow">RETO PÚBLICO</span><h2>Unirse a otra persona</h2></div><button className="text-button" onClick={() => run(loadLobby)}>Actualizar lista ↻</button></div><div className="lobby-list">{challenges.map((challenge) => <article className="lobby-row" key={challenge.id}><div className="game-symbol mini">{challenge.gameType === 'COIN' ? '◉' : challenge.gameType === 'PUZZLE' ? '▧' : 'Aa'}</div><div className="lobby-info"><strong>{challenge.creatorName}</strong><span>{gameNames[challenge.gameType]}</span></div><div className="lobby-stake"><span>APUESTA</span><strong>{challenge.stake.toLocaleString('es-CO')}</strong></div><button className="primary" disabled={busy} onClick={() => enterChallenge(challenge)}>Unirme</button></article>)}{challenges.length === 0 && <p className="empty-state">No hay retos esperando. Publica uno para que alguien pueda unirse.</p>}</div></div><div className="create-panel"><div><span className="eyebrow">PUBLICA UN RETO</span><h2>¿Qué quieres jugar?</h2><p className="muted">La apuesta se descuenta al comenzar.</p></div><div className="create-controls"><select value={selectedGame} onChange={(event) => setSelectedGame(event.target.value)}>{games.map((game) => <option key={game.id} value={game.id} disabled={!game.available}>{game.name}{!game.available ? ' — contenido pendiente' : ''}</option>)}</select><div className="stake-buttons">{STAKES.map((amount) => <button type="button" key={amount} className={stake === amount ? 'selected' : ''} onClick={() => setStake(amount)}>{amount.toLocaleString('es-CO')}</button>)}</div><button className="primary" disabled={busy || !games.find((game) => game.id === selectedGame)?.available || account?.credits < stake || activeSeconds >= 5400 || restSeconds > 0} onClick={createChallenge}>Publicar reto</button></div></div></section>}
