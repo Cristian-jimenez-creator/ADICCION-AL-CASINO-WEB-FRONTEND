@@ -24,6 +24,14 @@ La disponibilidad del rompecabezas y de palabra depende de que el backend tenga 
 - CSS adaptable para escritorio y móvil.
 - Fetch/HTTP para comunicarse con la API y WebRTC para voz entre jugadores.
 
+## Archivos principales
+
+- `src/App.jsx`: pantallas, estado de sesión, llamadas a la API y minijuegos.
+- `src/App.css` y `src/index.css`: estilos de las vistas y adaptación móvil.
+- `package.json`: dependencias y comandos de desarrollo, análisis y compilación.
+- `.env.example`: configuración pública de URL de API, video e ICE.
+- `vercel.json`: reescritura de rutas para la aplicación de página única.
+
 ## Ejecutar localmente
 
 Requisitos: Node.js y el backend iniciado en `http://localhost:8080`.
@@ -68,3 +76,4 @@ La compilación se genera en `dist/`. `vercel.json` permite las rutas de una apl
 5. Despliega y configura en Render `APP_CORS_ALLOWED_ORIGIN` con el dominio Vercel final.
 
 El recorrido de solicitudes es: navegador → frontend en Vercel → API en Render → MongoDB Atlas. El frontend no debe conectarse directamente a Atlas.
+
