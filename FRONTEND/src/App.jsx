@@ -6,6 +6,8 @@ const API = import.meta.env.PROD
   ? (configuredApi && !configuredApi.includes('localhost') ? configuredApi : 'https://adiccion-al-casino-web-backend.onrender.com')
   : (configuredApi || 'http://localhost:8080')
 const STAKES = [300, 800, 2000]
+const BACKEND_WAKE_ESTIMATE_SECONDS = 60
+const COIN_TOSS_DURATION_MS = 2800
 const gameNames = { COIN: 'Moneda y probabilidad', PUZZLE: 'Carrera de rompecabezas', WORD: 'Palabra o acertijo' }
 
 async function request(path, { token, ...options } = {}) {
@@ -70,6 +72,7 @@ function App() {
   const [wordFeedback, setWordFeedback] = useState('')
   const [wordSubmitting, setWordSubmitting] = useState(false)
   const [coinSubmitting, setCoinSubmitting] = useState(false)
+  const [coinAnimating, setCoinAnimating] = useState(false)
   const [puzzle, setPuzzle] = useState([])
   const [draggedIndex, setDraggedIndex] = useState(null)
   const [selectedPuzzleIndex, setSelectedPuzzleIndex] = useState(null)
@@ -79,7 +82,7 @@ function App() {
   const [blocked, setBlocked] = useState(false)
   const [backendStatus, setBackendStatus] = useState('checking')
   const [backendRetry, setBackendRetry] = useState(0)
-  const [backendWaitSeconds, setBackendWaitSeconds] = useState(0)
+  const [backendWaitSeconds, setBackendWaitSeconds] = useState(BACKEND_WAKE_ESTIMATE_SECONDS)
   const backendWaitStarted = useRef(Date.now())
   const voiceRef = useRef({ pc: null, stream: null, last: new Date(0).toISOString(), pendingCandidates: [] })
   const refreshRef = useRef(null)
@@ -87,10 +90,15 @@ function App() {
   const puzzleServerState = useRef('')
   const puzzleGridRef = useRef(null)
   const puzzleBeforePositions = useRef(null)
+  const lobbyRequestSequence = useRef(0)
+  const coinAnimationRef = useRef(false)
+  const coinAnimationStartedAt = useRef(0)
+  const coinRevealTimer = useRef(null)
+  const pendingCoinResult = useRef(null)
 
   useEffect(() => {
     if (token) return undefined
-    setBackendWaitSeconds(Math.floor((Date.now() - backendWaitStarted.current) / 1000))
+    setBackendWaitSeconds(Math.max(0, BACKEND_WAKE_ESTIMATE_SECONDS - Math.floor((Date.now() - backendWaitStarted.current) / 1000)))
     setBackendStatus('checking')
     let cancelled = false
     let timeoutId
@@ -98,7 +106,7 @@ function App() {
     let connected = false
 
     const timer = window.setInterval(() => {
-      setBackendWaitSeconds(Math.floor((Date.now() - backendWaitStarted.current) / 1000))
+      setBackendWaitSeconds(Math.max(0, BACKEND_WAKE_ESTIMATE_SECONDS - Math.floor((Date.now() - backendWaitStarted.current) / 1000)))
     }, 1000)
 
     async function checkBackend() {
@@ -149,9 +157,29 @@ function App() {
 
   const loadLobby = useCallback(async () => {
     if (!token || match) return
+    const requestSequence = ++lobbyRequestSequence.current
     const data = await request('/api/challenges/waiting', { token })
-    setChallenges(data)
+    if (requestSequence !== lobbyRequestSequence.current) return
+    setChallenges([...new Map(data.map((challenge) => [challenge.id, challenge])).values()])
   }, [token, match])
+
+  const queueCoinReveal = useCallback((result, delay = COIN_TOSS_DURATION_MS) => {
+    pendingCoinResult.current = result
+    if (!coinAnimationRef.current) {
+      coinAnimationRef.current = true
+      coinAnimationStartedAt.current = Date.now()
+      setCoinAnimating(true)
+    }
+    if (coinRevealTimer.current) return
+    coinRevealTimer.current = window.setTimeout(() => {
+      if (pendingCoinResult.current) setMatch(pendingCoinResult.current)
+      pendingCoinResult.current = null
+      coinRevealTimer.current = null
+      coinAnimationRef.current = false
+      coinAnimationStartedAt.current = 0
+      setCoinAnimating(false)
+    }, Math.max(0, delay))
+  }, [])
 
   useEffect(() => {
     if (!token) return
@@ -184,6 +212,11 @@ function App() {
       try {
         const updated = await request(`/api/challenges/${match.id}`, { token })
         if (!alive) return
+        if (updated.gameType === 'COIN' && updated.status === 'FINISHED' && match.status === 'ACTIVE') {
+          const elapsed = coinAnimationStartedAt.current ? Date.now() - coinAnimationStartedAt.current : 0
+          queueCoinReveal(updated, Math.max(0, COIN_TOSS_DURATION_MS - elapsed))
+          return
+        }
         setMatch(updated)
         if (updated.status !== 'ACTIVE') return
         const boardState = JSON.stringify(updated.myPuzzleBoard || [])
@@ -203,7 +236,7 @@ function App() {
     refresh()
     refreshRef.current = window.setInterval(refresh, 1200)
     return () => { alive = false; window.clearInterval(refreshRef.current) }
-  }, [token, match?.id, match?.status, loadAccount])
+  }, [token, match?.id, match?.status, loadAccount, queueCoinReveal])
 
   useLayoutEffect(() => {
     const before = puzzleBeforePositions.current
@@ -283,6 +316,7 @@ function App() {
   async function enterChallenge(challenge) {
     setBusy(true)
     setBlocked(false)
+    lobbyRequestSequence.current += 1
     chatCursor.current = null
     puzzleServerState.current = ''
     const joined = await run(() => request(`/api/challenges/${challenge.id}/join`, { token, method: 'POST', body: JSON.stringify({ stake: challenge.stake }) }))
@@ -304,7 +338,18 @@ function App() {
   async function chooseCoin(side) {
     if (coinSubmitting) return
     setCoinSubmitting(true)
-    await updateMatch('coin', { side })
+    coinAnimationRef.current = true
+    coinAnimationStartedAt.current = Date.now()
+    setCoinAnimating(true)
+    const result = await run(() => request(`/api/challenges/${match.id}/coin`, { token, method: 'POST', body: JSON.stringify({ side }) }))
+    if (result) {
+      const elapsed = Date.now() - coinAnimationStartedAt.current
+      queueCoinReveal(result, Math.max(0, COIN_TOSS_DURATION_MS - elapsed))
+    } else {
+      coinAnimationRef.current = false
+      coinAnimationStartedAt.current = 0
+      setCoinAnimating(false)
+    }
     setCoinSubmitting(false)
   }
 
@@ -405,7 +450,7 @@ function App() {
     setAccount(null)
     setMatch(null)
     backendWaitStarted.current = Date.now()
-    setBackendWaitSeconds(0)
+    setBackendWaitSeconds(BACKEND_WAKE_ESTIMATE_SECONDS)
   }
 
   function startVoice() {
@@ -449,7 +494,7 @@ function App() {
       <form className="auth-card" onSubmit={authenticate}>
         <div className={`backend-status ${backendStatus === 'ready' ? 'is-ready' : ''}`} role="status" aria-live="polite">
           {backendStatus === 'ready' ? <span className="backend-status-icon">✓</span> : <span className="backend-spinner" aria-hidden="true" />}
-          <div><strong>{backendStatus === 'ready' ? 'Servidor listo' : 'Esperando a que el servidor despierte…'}</strong><span>{backendStatus === 'ready' ? 'Ya puedes ingresar o crear tu cuenta.' : `Conectando · ${formatTime(backendWaitSeconds)}`}</span></div>
+          <div><strong>{backendStatus === 'ready' ? 'Servidor listo' : 'Esperando a que el servidor despierte…'}</strong><span>{backendStatus === 'ready' ? 'Ya puedes ingresar o crear tu cuenta.' : backendWaitSeconds > 0 ? `Tiempo estimado · ${formatTime(backendWaitSeconds)}` : 'Seguimos conectando; el inicio puede tardar más de lo estimado.'}</span></div>
           {backendStatus !== 'ready' && <button type="button" className="backend-retry" onClick={() => setBackendRetry((value) => value + 1)}>Reintentar</button>}
         </div>
         <span className="eyebrow">{authMode === 'login' ? 'QUÉ BUENO VERTE' : 'EMPECEMOS'}</span><h2>{authMode === 'login' ? 'Ingresa a tu cuenta' : 'Crea tu cuenta'}</h2><p className="muted">{authMode === 'login' ? 'Continúa desde donde lo dejaste.' : 'Al registrarte recibes 10.000 créditos ficticios.'}</p>
@@ -472,9 +517,13 @@ function App() {
             {match.status === 'ACTIVE' && <><div className="versus"><div><span>TÚ</span><strong>{account?.name}</strong></div><span className="versus-mark">VS</span><div><span>CONTRINCANTE</span><strong>{match.creatorId === account.id ? match.opponentName : match.creatorName}</strong></div></div>
               {match.gameType === 'COIN' && (
                 <div className="game-panel coin-stage">
-                  <div className="coin-arena" aria-live="polite">
-                    <span className="coin-shadow" aria-hidden="true" />
-                    <div className="coin-icon coin-idle" aria-hidden="true"><span>?</span></div>
+                  <div className={`coin-scene ${coinAnimating ? 'is-tossing' : ''}`} aria-live="polite" aria-label={coinAnimating ? 'Un jugador lanza la moneda al aire; el resultado se revelará al caer.' : 'Moneda lista para lanzar'}>
+                    <div className="coin-thrower" aria-hidden="true"><span className="thrower-head"/><span className="thrower-body"/><span className="thrower-arm"/></div>
+                    <div className="coin-arena">
+                      <span className="coin-shadow" aria-hidden="true" />
+                      <div className={`coin-icon ${coinAnimating ? 'coin-flight' : 'coin-idle'}`} aria-hidden="true"><span>{coinAnimating ? '✦' : '?'}</span></div>
+                    </div>
+                    <span className="coin-floor" aria-hidden="true" />
                   </div>
                   <h2>Elige cara o sello</h2>
                   <p>Ambas opciones tienen 50 % de probabilidad. Al elegir, se lanza una moneda virtual y el resultado aparece para los dos.</p>
@@ -482,7 +531,7 @@ function App() {
                     <button type="button" className="choice" disabled={coinSubmitting} onClick={() => chooseCoin('CARA')}>Cara</button>
                     <button type="button" className="choice" disabled={coinSubmitting} onClick={() => chooseCoin('SELLO')}>Sello</button>
                   </div>
-                  {coinSubmitting && <p className="game-hint" role="status">Lanzando la moneda…</p>}
+                  {coinAnimating && <p className="game-hint coin-announcement" role="status">La moneda está en el aire… espera a que caiga para ver quién gana.</p>}
                 </div>
               )}
               {match.gameType === 'PUZZLE' && (
@@ -557,3 +606,4 @@ function App() {
   )
 }
 export default App
+
