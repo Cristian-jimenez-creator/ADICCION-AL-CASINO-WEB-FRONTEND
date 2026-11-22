@@ -77,3 +77,20 @@ La compilación se genera en `dist/`. `vercel.json` permite las rutas de una apl
 
 El recorrido de solicitudes es: navegador → frontend en Vercel → API en Render → MongoDB Atlas. El frontend no debe conectarse directamente a Atlas.
 
+## Comportamiento de las rondas
+
+- La ronda de moneda anima el lanzamiento durante aproximadamente 2,8 segundos y presenta el resultado recibido del servidor.
+- En rompecabezas ambos participantes reciben el mismo reto; si el contenido de imágenes no está disponible, la partida no puede ofrecer un tablero válido.
+- En palabra/acertijo, la pista de ronda se comparte con ambos participantes, las casillas corresponden a las letras de la respuesta y el tiempo límite es de 40 segundos.
+- La música se genera en el navegador, se puede ajustar o silenciar y se detiene mientras está activo el video informativo. Los tonos de resultado se reproducen en el cliente.
+
+## Conexión de voz: límites de configuración
+
+VITE_WEBRTC_ICE_SERVERS es un arreglo JSON público que el cliente usa en WebRTC. La API transporta las señales OFFER, ANSWER e ICE, pero para atravesar NAT/firewalls se requieren servidores ICE compatibles; confirma conectividad en dos redes/dispositivos antes de dar por validada la voz.
+
+## Resolución de problemas de despliegue
+
+- Failed to fetch: revisa la URL de Render en VITE_API_URL, que Render esté activo y que el dominio Vercel esté permitido por APP_CORS_ALLOWED_ORIGIN.
+- La pantalla espera al servidor: el frontend está esperando respuesta de la API; recarga o usa reintentar y revisa los logs del servicio de Render si persiste.
+- Cambios de variables VITE_*: requieren una nueva compilación y despliegue de Vercel.
+- El catálogo carga, pero un juego de contenido no: revisa los archivos TSV del backend y APP_GAME_CONTENT_DIR.
