@@ -158,6 +158,7 @@ function App() {
   const [stake, setStake] = useState(300)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const [dailyRewardCredits, setDailyRewardCredits] = useState(0)
   const [error, setError] = useState('')
   const [chatMessages, setChatMessages] = useState([])
   const [message, setMessage] = useState('')
@@ -285,7 +286,18 @@ function App() {
 
   useEffect(() => {
     if (!token) return
-    const timer = window.setTimeout(() => run(async () => { await loadAccount(token); await loadGames() }), 0)
+    const timer = window.setTimeout(() => run(async () => {
+      const rewardCheckedToken = sessionStorage.getItem('sim-daily-reward-checked')
+      if (rewardCheckedToken !== token) {
+        const reward = await request('/api/auth/daily-reward/claim', { token, method: 'POST' })
+        sessionStorage.setItem('sim-daily-reward-checked', token)
+        setAccount(reward.player)
+        if (reward.dailyCreditsAwarded > 0) setDailyRewardCredits(reward.dailyCreditsAwarded)
+      } else {
+        await loadAccount(token)
+      }
+      await loadGames()
+    }), 0)
     return () => window.clearTimeout(timer)
   }, [token, loadAccount, loadGames, run])
 
@@ -408,7 +420,7 @@ function App() {
     const form = new FormData(event.currentTarget)
     const body = Object.fromEntries(form.entries())
     const result = await run(() => request(`/api/auth/${authMode === 'login' ? 'login' : 'register'}`, { method: 'POST', body: JSON.stringify(body) }))
-    if (result) { sessionStorage.setItem('sim-token', result.token); setAccount(result.player); setToken(result.token); setNotice('Sesión iniciada. Tu saldo usa créditos ficticios.'); }
+    if (result) { sessionStorage.setItem('sim-token', result.token); sessionStorage.setItem('sim-daily-reward-checked', result.token); setAccount(result.player); setToken(result.token); if (result.dailyCreditsAwarded > 0) setDailyRewardCredits(result.dailyCreditsAwarded); setNotice('Sesión iniciada. Tu saldo usa créditos ficticios.'); }
     setBusy(false)
   }
 
@@ -570,6 +582,7 @@ function App() {
     }
     stopVoice()
     sessionStorage.removeItem('sim-token')
+    sessionStorage.removeItem('sim-daily-reward-checked')
     setToken('')
     setAccount(null)
     setMatch(null)
@@ -656,6 +669,7 @@ function App() {
 
   return (
     <div className="app-shell">
+      {dailyRewardCredits > 0 && <div className="modal-backdrop daily-reward-backdrop"><section className="daily-reward-card" role="dialog" aria-modal="true" aria-labelledby="daily-reward-title"><button className="close-button" type="button" aria-label="Cerrar" onClick={() => setDailyRewardCredits(0)}>×</button><div className="reward-coins" aria-hidden="true"><span>◎</span><span>✦</span><span>◎</span></div><span className="eyebrow">REGALO DIARIO</span><h2 id="daily-reward-title">¡Te regalamos créditos!</h2><p>Por volver hoy recibiste</p><strong className="reward-amount">+{dailyRewardCredits.toLocaleString('es-CO')}</strong><small>créditos ficticios</small><button className="primary" type="button" onClick={() => setDailyRewardCredits(0)}>Continuar</button></section></div>}
       <header className="topbar"><a className="brand" href="#inicio" onClick={(event) => { event.preventDefault(); if (match?.status === 'ACTIVE') void leaveMatch(); else { setMatch(null); setTab('games') } }}><span className="brand-mark small">◎</span><span>SIMULADOR<br /><small>créditos ficticios</small></span></a><div className="top-meta"><div className="balance"><span>CRÉDITOS FICTICIOS</span><strong>{(account?.credits || 0).toLocaleString('es-CO')}</strong></div><div className="time-chip"><span>TIEMPO ACTIVO HOY</span><strong>{formatTime(Math.max(0, 5400 - activeSeconds))} restante</strong></div><button className="avatar" title="Cerrar sesión" onClick={signOut}>{account?.name?.slice(0, 1).toUpperCase()}</button></div></header>
       <main className="page">
         {error && <div className="alert error-alert" role="alert">{error}<button onClick={() => setError('')}>×</button></div>}{notice && <div className="alert notice-alert">{notice}<button onClick={() => setNotice('')}>×</button></div>}{activeSeconds >= 5400 && <div className="alert notice-alert" role="status">Terminó tu tiempo de juego por este periodo de 24 horas. No puedes iniciar nuevas partidas.</div>}
