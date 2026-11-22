@@ -1,21 +1,54 @@
 # Frontend
 
-Interfaz web independiente en React 19.3, JavaScript y Vite 7.3.8.
+Interfaz web del **Simulador de juegos con créditos ficticios**. El problema que resuelve es ofrecer a los jugadores una forma clara de registrarse, publicar retos, jugar y consultar resultados. La solución es una aplicación React que consume la API del backend; no se conecta directamente a MongoDB ni contiene credenciales de base de datos.
+
+El frontend se despliega como sitio estático en Vercel. El backend se ejecuta por separado en Render y se conecta a MongoDB Atlas. La presentación de diseño del proyecto se usa como referencia y no se incluye en este repositorio.
+
+## Funciones de la interfaz
+
+- Registro e inicio de sesión.
+- Saldo de créditos ficticios, recompensa diaria y límite de tiempo de juego.
+- Retos públicos y partidas de moneda, rompecabezas y palabra/acertijo.
+- Animaciones de los minijuegos, controles de música y efectos de resultado.
+- Chat de partida, reportes y opción de voz entre jugadores.
+- Diseños adaptables a pantallas de computador y teléfono.
+
+La disponibilidad del rompecabezas y de palabra depende de que el backend tenga cargado su contenido. La voz entre redes necesita servidores ICE; sin esa configuración puede no establecerse la conexión de audio.
+
+## Tecnologías
+
+- React 19.3 y React DOM.
+- JavaScript con módulos ES.
+- Vite 7.3.8 para desarrollo y compilación.
+- ESLint 9 para análisis estático.
+- CSS adaptable para escritorio y móvil.
+- Fetch/HTTP para comunicarse con la API y WebRTC para voz entre jugadores.
 
 ## Ejecutar localmente
 
-Necesita el backend disponible en `http://localhost:8080` o una URL configurada mediante `VITE_API_URL`.
+Requisitos: Node.js y el backend iniciado en `http://localhost:8080`.
+
+Desde la raíz del repositorio:
 
 ```powershell
+cd FRONTEND
 npm install
 npm run dev
 ```
 
-Puedes copiar `.env.example` a `.env` y cambiar:
+Vite muestra la URL local, normalmente `http://localhost:5173`. Para acceder a los datos y jugar, el backend y MongoDB también deben estar disponibles.
 
-- `VITE_API_URL`: dirección del backend.
-- `VITE_INFORMATIVE_VIDEO_URL`: URL de un archivo de video reproducible por el navegador.
-- `VITE_WEBRTC_ICE_SERVERS`: arreglo JSON con los servidores ICE configurados para voz.
+## Variables de entorno
+
+Copia `.env.example` como `.env` dentro de esta carpeta y ajusta los valores:
+
+| Variable | Uso |
+| --- | --- |
+| `VITE_API_URL` | URL base del backend; localmente `http://localhost:8080`. |
+| `VITE_INFORMATIVE_VIDEO_URL` | URL de un video reproducible por el navegador para el flujo de pausa, si se configura. |
+| `VITE_WEBRTC_ICE_SERVERS` | Arreglo JSON de servidores ICE para voz; queda vacío en la plantilla. |
+
+En Vercel configura `VITE_API_URL` con la URL pública del backend de Render. `VITE_*` se incorpora al JavaScript entregado a todos los visitantes: úsalo solo para configuración pública. Nunca coloques contraseñas, tokens privados ni `MONGODB_URI` aquí. Configura el origen de Vercel también en `APP_CORS_ALLOWED_ORIGIN` del backend.
 
 ## Comprobaciones
 
@@ -24,4 +57,14 @@ npm run lint
 npm run build
 ```
 
-La configuración `vercel.json` permite servir las rutas del frontend como aplicación de página única.
+La compilación se genera en `dist/`. `vercel.json` permite las rutas de una aplicación de página única.
+
+## Despliegue en Vercel
+
+1. Importa el repositorio `ADICCION-AL-CASINO-WEB-FRONTEND`.
+2. Configura **Root Directory** como `FRONTEND`.
+3. Usa `npm install` y `npm run build`; el directorio de salida es `dist`.
+4. Agrega `VITE_API_URL` con la URL del servicio backend de Render.
+5. Despliega y configura en Render `APP_CORS_ALLOWED_ORIGIN` con el dominio Vercel final.
+
+El recorrido de solicitudes es: navegador → frontend en Vercel → API en Render → MongoDB Atlas. El frontend no debe conectarse directamente a Atlas.
