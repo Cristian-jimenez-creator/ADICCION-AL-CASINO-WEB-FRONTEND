@@ -11,9 +11,10 @@ const COIN_TOSS_DURATION_MS = 2800
 const WORD_ROUND_SECONDS = 40
 const gameNames = { COIN: 'Moneda y probabilidad', PUZZLE: 'Carrera de rompecabezas', WORD: 'Palabra o acertijo' }
 const MUSIC_THEMES = {
-  COIN: { beatMs: 620, wave: 'triangle', notes: [220, 261.63, 329.63, 293.66, 196, 261.63, 329.63, 246.94] },
-  PUZZLE: { beatMs: 390, wave: 'sine', notes: [261.63, 329.63, 392, 329.63, 293.66, 349.23, 440, 392] },
-  WORD: { beatMs: 540, wave: 'sine', notes: [196, 233.08, 261.63, 220, 174.61, 220, 261.63, 233.08] },
+  // Melodies and harmonies are composed in-app; no recorded or copyrighted tracks are used.
+  COIN: { beatMs: 520, wave: 'triangle', notes: [392, 493.88, 587.33, 493.88, 440, 523.25, 659.25, 523.25], chords: [[196, 246.94, 293.66], [220, 261.63, 329.63], [174.61, 220, 261.63], [196, 246.94, 293.66]] },
+  PUZZLE: { beatMs: 430, wave: 'sine', notes: [523.25, 659.25, 783.99, 659.25, 587.33, 698.46, 880, 698.46], chords: [[130.81, 164.81, 196], [146.83, 185, 220], [174.61, 220, 261.63], [146.83, 185, 220]] },
+  WORD: { beatMs: 560, wave: 'triangle', notes: [293.66, 349.23, 392, 349.23, 261.63, 329.63, 392, 329.63], chords: [[146.83, 174.61, 220], [130.81, 164.81, 196], [164.81, 196, 246.94], [130.81, 164.81, 196]] },
 }
 const REST_VIDEOS = [
   { id: 'Om7Bq89RQgk', title: 'Pausa breve 1' },
@@ -171,9 +172,9 @@ function App() {
   const [musicEnabled, setMusicEnabled] = useState(() => localStorage.getItem('sim-music-enabled') !== 'false')
   const [musicVolume, setMusicVolume] = useState(() => {
     const savedVolume = localStorage.getItem('sim-music-volume')
-    if (savedVolume === null) return 0.24
+    if (savedVolume === null) return 0.4
     const stored = Number(savedVolume)
-    return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : 0.24
+    return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? (stored === 0.24 ? 0.4 : stored) : 0.4
   })
   const [musicUnlocked, setMusicUnlocked] = useState(false)
   const [videoPlaying, setVideoPlaying] = useState(false)
@@ -217,6 +218,8 @@ function App() {
   const coinRevealTimer = useRef(null)
   const pendingCoinResult = useRef(null)
   const musicEngineRef = useRef(null)
+  const presenceAnchor = useRef({ seconds: 0, at: Date.now() })
+  const resultSoundMatch = useRef(null)
 
   function unlockMusic() {
     try {
@@ -225,9 +228,12 @@ function App() {
         if (!AudioContextClass) return
         const context = new AudioContextClass()
         const master = context.createGain()
-        master.gain.value = musicVolume * 0.65
+        const effects = context.createGain()
+        master.gain.value = musicVolume * 0.9
+        effects.gain.value = musicVolume * 0.9
         master.connect(context.destination)
-        musicEngineRef.current = { context, master }
+        effects.connect(context.destination)
+        musicEngineRef.current = { context, master, effects }
       }
       if (musicEngineRef.current.context.state === 'suspended') void musicEngineRef.current.context.resume().catch(() => {})
       setMusicUnlocked(true)
@@ -297,6 +303,7 @@ function App() {
   const loadAccount = useCallback(async (authToken = token) => {
     if (!authToken) return
     const data = await request('/api/auth/me', { token: authToken })
+    presenceAnchor.current = { seconds: data.activePlaySeconds || 0, at: Date.now() }
     setAccount(data)
   }, [token])
 
@@ -363,7 +370,10 @@ function App() {
       try {
         if (document.visibilityState === 'visible') {
           const data = await request('/api/auth/activity/pulse', { token, method: 'POST' })
-          if (alive) setAccount(data)
+          if (alive) {
+            presenceAnchor.current = { seconds: data.activePlaySeconds || 0, at: Date.now() }
+            setAccount(data)
+          }
         }
       } catch (err) {
         if (alive) setError(err.message)
@@ -387,7 +397,8 @@ function App() {
     localStorage.setItem('sim-music-volume', String(musicVolume))
     const engine = musicEngineRef.current
     if (!engine) return
-    engine.master.gain.setTargetAtTime(musicEnabled ? musicVolume * 0.65 : 0, engine.context.currentTime, 0.08)
+    engine.master.gain.setTargetAtTime(musicEnabled ? musicVolume * 0.9 : 0, engine.context.currentTime, 0.08)
+    engine.effects.gain.setTargetAtTime(musicVolume * 0.9, engine.context.currentTime, 0.08)
   }, [musicEnabled, musicVolume])
 
   useEffect(() => {
@@ -396,27 +407,60 @@ function App() {
     if (!engine || !musicUnlocked || !musicEnabled || videoPlaying || match?.status !== 'ACTIVE' || !theme) return undefined
     let step = 0
     let timer
-    const playBeat = () => {
-      if (engine.context.state === 'suspended') void engine.context.resume().catch(() => {})
-      const frequency = theme.notes[step % theme.notes.length]
+    const playTone = (frequency, wave, peak, duration, attack = 0.06) => {
       const oscillator = engine.context.createOscillator()
       const envelope = engine.context.createGain()
       const start = engine.context.currentTime
-      oscillator.type = theme.wave
+      oscillator.type = wave
       oscillator.frequency.setValueAtTime(frequency, start)
       envelope.gain.setValueAtTime(0.0001, start)
-      envelope.gain.exponentialRampToValueAtTime(0.22, start + 0.045)
-      envelope.gain.exponentialRampToValueAtTime(0.0001, start + Math.min(0.34, theme.beatMs / 1000 * 0.8))
+      envelope.gain.exponentialRampToValueAtTime(peak, start + attack)
+      envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration)
       oscillator.connect(envelope)
       envelope.connect(engine.master)
       oscillator.start(start)
-      oscillator.stop(start + 0.36)
+      oscillator.stop(start + duration + 0.02)
+    }
+    const playBeat = () => {
+      if (engine.context.state === 'suspended') void engine.context.resume().catch(() => {})
+      const frequency = theme.notes[step % theme.notes.length]
+      const beatSeconds = theme.beatMs / 1000
+      playTone(frequency, theme.wave, 0.2, beatSeconds * 0.78, 0.035)
+      playTone(theme.chords[Math.floor(step / 4) % theme.chords.length][0] / 2, 'sine', 0.12, beatSeconds * 0.92, 0.025)
+      if (step % 4 === 0) {
+        for (const chordNote of theme.chords[Math.floor(step / 4) % theme.chords.length]) {
+          playTone(chordNote, 'sine', 0.045, beatSeconds * 3.6, 0.18)
+        }
+      }
       step += 1
       timer = window.setTimeout(playBeat, theme.beatMs)
     }
     playBeat()
     return () => window.clearTimeout(timer)
   }, [match?.gameType, match?.status, musicEnabled, musicUnlocked, videoPlaying])
+
+  useEffect(() => {
+    if (!match || match.status !== 'FINISHED' || !musicUnlocked || resultSoundMatch.current === match.id) return
+    resultSoundMatch.current = match.id
+    const engine = musicEngineRef.current
+    if (!engine || engine.context.state === 'closed') return
+    const won = match.winnerId === account?.id
+    const notes = won ? [523.25, 659.25, 783.99] : [392, 329.63, 261.63]
+    notes.forEach((frequency, index) => {
+      const start = engine.context.currentTime + index * 0.15
+      const oscillator = engine.context.createOscillator()
+      const envelope = engine.context.createGain()
+      oscillator.type = won ? 'triangle' : 'sine'
+      oscillator.frequency.setValueAtTime(frequency, start)
+      envelope.gain.setValueAtTime(0.0001, start)
+      envelope.gain.exponentialRampToValueAtTime(won ? 0.3 : 0.18, start + 0.025)
+      envelope.gain.exponentialRampToValueAtTime(0.0001, start + 0.42)
+      oscillator.connect(envelope)
+      envelope.connect(engine.effects)
+      oscillator.start(start)
+      oscillator.stop(start + 0.44)
+    })
+  }, [match?.id, match?.status, match?.winnerId, account?.id, musicUnlocked])
 
   useEffect(() => () => {
     const engine = musicEngineRef.current
@@ -526,17 +570,17 @@ function App() {
   async function authenticate(event) {
     event.preventDefault()
     if (backendStatus !== 'ready') return
-    if (musicEnabled) unlockMusic()
+    unlockMusic()
     setBusy(true)
     const form = new FormData(event.currentTarget)
     const body = Object.fromEntries(form.entries())
     const result = await run(() => request(`/api/auth/${authMode === 'login' ? 'login' : 'register'}`, { method: 'POST', body: JSON.stringify(body) }))
-    if (result) { sessionStorage.setItem('sim-token', result.token); sessionStorage.setItem('sim-daily-reward-checked', result.token); setAccount(result.player); setToken(result.token); if (result.dailyCreditsAwarded > 0) setDailyRewardCredits(result.dailyCreditsAwarded); setNotice('Sesión iniciada. Tu saldo usa créditos ficticios.'); }
+    if (result) { sessionStorage.setItem('sim-token', result.token); sessionStorage.setItem('sim-daily-reward-checked', result.token); presenceAnchor.current = { seconds: result.player.activePlaySeconds || 0, at: Date.now() }; setAccount(result.player); setToken(result.token); if (result.dailyCreditsAwarded > 0) setDailyRewardCredits(result.dailyCreditsAwarded); setNotice('Sesión iniciada. Tu saldo usa créditos ficticios.'); }
     setBusy(false)
   }
 
   async function createChallenge() {
-    if (musicEnabled) unlockMusic()
+    unlockMusic()
     setBusy(true)
     setBlocked(false)
     chatCursor.current = null
@@ -547,7 +591,7 @@ function App() {
   }
 
   async function enterChallenge(challenge) {
-    if (musicEnabled) unlockMusic()
+    unlockMusic()
     setBusy(true)
     setBlocked(false)
     lobbyRequestSequence.current += 1
@@ -761,7 +805,10 @@ function App() {
   const secondsLeft = restUntil ? Math.max(0, Math.ceil((restUntil - now) / 1000)) : 0
   const wordSecondsLeft = match?.wordDeadline ? Math.max(0, Math.ceil((new Date(match.wordDeadline).getTime() - now) / 1000)) : WORD_ROUND_SECONDS
   const wordTimerProgress = Math.min(1, Math.max(0, wordSecondsLeft / WORD_ROUND_SECONDS))
-  const activeSeconds = account?.activePlaySeconds || 0
+  const activeSeconds = Math.min(5400, Math.max(account?.activePlaySeconds || 0,
+    (presenceAnchor.current.seconds || 0) + (account && document.visibilityState === 'visible'
+      ? Math.floor((now - presenceAnchor.current.at) / 1000)
+      : 0)))
   const restSeconds = account?.restUntil ? Math.max(0, Math.ceil((new Date(account.restUntil).getTime() - now) / 1000)) : 0
 
   if (!token) return (
@@ -910,3 +957,4 @@ function App() {
   )
 }
 export default App
+
