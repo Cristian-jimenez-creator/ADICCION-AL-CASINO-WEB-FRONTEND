@@ -9,6 +9,104 @@ const STAKES = [300, 800, 2000]
 const BACKEND_WAKE_ESTIMATE_SECONDS = 60
 const COIN_TOSS_DURATION_MS = 2800
 const gameNames = { COIN: 'Moneda y probabilidad', PUZZLE: 'Carrera de rompecabezas', WORD: 'Palabra o acertijo' }
+const REST_VIDEOS = [
+  { id: 'Om7Bq89RQgk', title: 'Pausa breve 1' },
+  { id: 'zEWbXZdGHn8', title: 'Pausa breve 2' },
+  { id: 'Wtoms58CvV0', title: 'Pausa breve 3' },
+  { id: 'iEOj_3xa-6I', title: 'Pausa breve 4' },
+  { id: 'moKY3LAUZE4', title: 'Pausa breve 5' },
+]
+
+function loadYouTubeIframeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT)
+  if (!window.youtubeIframeApiPromise) {
+    window.youtubeIframeApiPromise = new Promise((resolve) => {
+      const previousCallback = window.onYouTubeIframeAPIReady
+      window.onYouTubeIframeAPIReady = () => {
+        previousCallback?.()
+        resolve(window.YT)
+      }
+      if (!document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
+        const script = document.createElement('script')
+        script.src = 'https://www.youtube.com/iframe_api'
+        script.async = true
+        document.head.appendChild(script)
+      }
+    })
+  }
+  return window.youtubeIframeApiPromise
+}
+
+function randomRestVideo(previousId = null) {
+  const options = REST_VIDEOS.filter((video) => video.id !== previousId)
+  return options[Math.floor(Math.random() * options.length)] || REST_VIDEOS[0]
+}
+
+function YouTubePlayer({ video, onEnded, onError }) {
+  const mountRef = useRef(null)
+  const onEndedRef = useRef(onEnded)
+  const onErrorRef = useRef(onError)
+
+  useEffect(() => { onEndedRef.current = onEnded }, [onEnded])
+  useEffect(() => { onErrorRef.current = onError }, [onError])
+
+  useEffect(() => {
+    let disposed = false
+    let player
+    loadYouTubeIframeApi().then((youtube) => {
+      if (disposed || !mountRef.current) return
+      player = new youtube.Player(mountRef.current, {
+        videoId: video.id,
+        playerVars: { playsinline: 1, rel: 0, autoplay: 0 },
+        events: {
+          onStateChange: (event) => {
+            if (event.data === youtube.PlayerState.ENDED) onEndedRef.current()
+          },
+          onError: () => onErrorRef.current(),
+        },
+      })
+    }).catch(() => onErrorRef.current())
+    return () => {
+      disposed = true
+      player?.destroy()
+    }
+  }, [video.id])
+
+  return <div className="youtube-player" ref={mountRef} aria-label={`Video de pausa: ${video.title}`} />
+}
+
+function RestChoicePanel({ secondsLeft, choice, setChoice, video, videoComplete, videoError, onChooseVideo, onComplete, onVideoEnded, onVideoError }) {
+  return (
+    <section className="rest-choice" aria-live="polite">
+      <div className="rest-choice-heading">
+        <span className="eyebrow">PAUSA DESPUÉS DE LA PARTIDA</span>
+        <h3>Elige cómo hacer tu pausa</h3>
+        <p>El descanso de cinco minutos ya está corriendo.</p>
+      </div>
+      {choice === 'choice' && <div className="rest-choice-actions">
+        <button className="primary" type="button" onClick={onChooseVideo}>Ver un video al azar</button>
+        <button className="secondary" type="button" onClick={() => setChoice('wait')}>Esperar {formatTime(secondsLeft)}</button>
+      </div>}
+      {choice === 'video' && <div className="rest-video-panel">
+        <p>{videoComplete ? 'Terminó el video. Ya puedes continuar.' : `${video?.title || 'Video de pausa'} · míralo completo para cerrar la pausa.`}</p>
+        {video && <YouTubePlayer video={video} onEnded={onVideoEnded} onError={onVideoError} />}
+        {videoError && <div className="rest-video-error" role="alert">{videoError}<button className="text-button" type="button" onClick={onChooseVideo}>Probar otro video</button></div>}
+        <div className="rest-choice-actions">
+          <button className="primary" type="button" disabled={!videoComplete} onClick={onComplete}>Continuar</button>
+          <button className="secondary" type="button" onClick={() => setChoice('wait')}>Prefiero esperar {formatTime(secondsLeft)}</button>
+        </div>
+      </div>}
+      {choice === 'wait' && <div className="rest-wait-panel">
+        <strong>{secondsLeft > 0 ? `Tiempo restante: ${formatTime(secondsLeft)}` : 'Tu pausa terminó'}</strong>
+        <p>Cuando el contador llegue a cero, podrás continuar.</p>
+        <div className="rest-choice-actions">
+          <button className="primary" type="button" disabled={secondsLeft > 0} onClick={onComplete}>Continuar</button>
+          <button className="secondary" type="button" onClick={onChooseVideo}>Ver un video al azar</button>
+        </div>
+      </div>}
+    </section>
+  )
+}
 
 async function request(path, { token, ...options } = {}) {
   const response = await fetch(`${API}${path}`, {
@@ -66,6 +164,10 @@ function App() {
   const [muted, setMuted] = useState(false)
   const [chatMuted, setChatMuted] = useState(false)
   const [videoComplete, setVideoComplete] = useState(false)
+  const [postGameChoice, setPostGameChoice] = useState('choice')
+  const [selectedVideo, setSelectedVideo] = useState(null)
+  const [videoPlayerError, setVideoPlayerError] = useState('')
+  const [voiceStatus, setVoiceStatus] = useState('')
   const [restUntil, setRestUntil] = useState(0)
   const [now, setNow] = useState(Date.now())
   const [wordAnswer, setWordAnswer] = useState('')
@@ -270,6 +372,9 @@ function App() {
       const timer = window.setTimeout(() => {
         setRestUntil(Date.now() + 5 * 60_000)
         setVideoComplete(false)
+        setPostGameChoice('choice')
+        setSelectedVideo(randomRestVideo())
+        setVideoPlayerError('')
         setVoiceOn(false)
         stopVoice()
         run(() => loadAccount())
@@ -277,6 +382,10 @@ function App() {
       return () => window.clearTimeout(timer)
     }
   }, [match?.status, loadAccount, run])
+
+  useEffect(() => {
+    if (account?.restUntil && !selectedVideo) setSelectedVideo(randomRestVideo())
+  }, [account?.restUntil, selectedVideo])
 
   useEffect(() => () => stopVoice(), [])
 
@@ -396,10 +505,25 @@ function App() {
   }
 
   async function completeRest() {
-    setVideoComplete(true)
-    setRestUntil(0)
+    if (postGameChoice === 'video' && !videoComplete) return
+    if (postGameChoice === 'wait' && Math.max(secondsLeft, restSeconds) > 0) return
     const updated = await run(() => request('/api/auth/rest/complete', { token, method: 'POST' }))
-    if (updated) setAccount(updated)
+    if (updated) {
+      setAccount(updated)
+      setVideoComplete(false)
+      setRestUntil(0)
+      setPostGameChoice('choice')
+      setSelectedVideo(null)
+      setMatch(null)
+      setChatMessages([])
+    }
+  }
+
+  function choosePauseVideo() {
+    setSelectedVideo((current) => randomRestVideo(current?.id))
+    setVideoComplete(false)
+    setVideoPlayerError('')
+    setPostGameChoice('video')
   }
 
   async function showReports() {
@@ -454,22 +578,45 @@ function App() {
   }
 
   function startVoice() {
-    setVoiceOn(true); setError('')
-    connectVoice().catch((err) => { setVoiceOn(false); setError(err.message || 'No fue posible iniciar la voz.') })
+    setVoiceOn(true)
+    setVoiceStatus('Conectando al micrófono…')
+    setError('')
+    connectVoice().catch((err) => {
+      stopVoice()
+      setVoiceOn(false)
+      setVoiceStatus('')
+      setError(err.message || 'No fue posible iniciar la voz.')
+    })
   }
 
   async function connectVoice() {
-    const iceServers = JSON.parse(import.meta.env.VITE_WEBRTC_ICE_SERVERS || '[]')
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('El navegador no permite usar el micrófono. Abre la app con HTTPS y permite el acceso al micrófono.')
+    const fallbackIceServers = [{ urls: 'stun:stun.l.google.com:19302' }]
+    const iceServers = JSON.parse(import.meta.env.VITE_WEBRTC_ICE_SERVERS || JSON.stringify(fallbackIceServers))
     const pc = new RTCPeerConnection({ iceServers })
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     stream.getTracks().forEach((track) => pc.addTrack(track, stream))
-    pc.ontrack = (event) => { const audio = document.getElementById('remote-audio'); if (audio) audio.srcObject = event.streams[0] }
-    pc.onicecandidate = ({ candidate }) => { if (candidate) postSignal(match.id, 'ICE', candidate.toJSON()) }
+    pc.ontrack = (event) => {
+      const audio = document.getElementById('remote-audio')
+      if (!audio) return
+      audio.srcObject = event.streams[0]
+      audio.play().catch(() => setVoiceStatus('La voz está conectada. Toca “Activar audio” para escuchar.'))
+    }
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') setVoiceStatus('Voz conectada con tu contrincante.')
+      else if (pc.connectionState === 'connecting') setVoiceStatus('Conectando la voz con tu contrincante…')
+      else if (pc.connectionState === 'failed') setVoiceStatus('No se pudo conectar en esta red. Puede requerir configuración TURN.')
+      else if (pc.connectionState === 'disconnected') setVoiceStatus('Se interrumpió la voz; intentando recuperar la conexión…')
+    }
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) postSignal(match.id, 'ICE', candidate.toJSON()).catch((err) => setVoiceStatus(err.message || 'Falló el intercambio de señal de voz.'))
+    }
     voiceRef.current = { pc, stream, last: new Date(0).toISOString(), pendingCandidates: [] }
     const otherId = match.creatorId === account.id ? match.opponentId : match.creatorId
     if (account.id.localeCompare(otherId) < 0) {
       const offer = await pc.createOffer(); await pc.setLocalDescription(offer); await postSignal(match.id, 'OFFER', offer)
     }
+    setVoiceStatus('Micrófono listo; esperando a que se conecte la otra persona…')
   }
 
   async function postSignal(id, kind, payload) {
@@ -478,13 +625,14 @@ function App() {
 
   function stopVoice() {
     voiceRef.current.pc?.close(); voiceRef.current.stream?.getTracks().forEach((track) => track.stop())
+    const audio = document.getElementById('remote-audio')
+    if (audio) audio.srcObject = null
     voiceRef.current = { pc: null, stream: null, last: new Date(0).toISOString(), pendingCandidates: [] }
   }
 
   const secondsLeft = restUntil ? Math.max(0, Math.ceil((restUntil - now) / 1000)) : 0
   const wordSecondsLeft = match?.wordDeadline ? Math.max(0, Math.ceil((new Date(match.wordDeadline).getTime() - now) / 1000)) : 35
   const wordTimerProgress = Math.min(1, Math.max(0, wordSecondsLeft / 35))
-  const videoUrl = import.meta.env.VITE_INFORMATIVE_VIDEO_URL
   const activeSeconds = account?.activePlaySeconds || 0
   const restSeconds = account?.restUntil ? Math.max(0, Math.ceil((new Date(account.restUntil).getTime() - now) / 1000)) : 0
 
@@ -584,11 +732,14 @@ function App() {
                     <span><strong>{wordSecondsLeft}</strong><small>segundos</small></span>
                   </div>
                   <article className="word-card">
-                    <span>ACERTIJO</span>
+                    <span>PISTA EN ESPAÑOL</span>
                     <h2>{match.wordPrompt}</h2>
                   </article>
+                  <div className="word-blanks" role="img" aria-label={`La respuesta tiene ${match.wordLength} letras`}>
+                    {Array.from({ length: Math.min(40, Math.max(0, match.wordLength || 0)) }, (_, index) => <span key={index}>_</span>)}
+                  </div>
                   <form className="answer-form" onSubmit={submitWord}>
-                    <input value={wordAnswer} onChange={(event) => setWordAnswer(event.target.value)} placeholder="Escribe tu respuesta" maxLength="200" required disabled={wordSubmitting || wordSecondsLeft === 0} />
+                    <input value={wordAnswer} onChange={(event) => setWordAnswer(event.target.value)} placeholder="Responde en español" maxLength="200" required disabled={wordSubmitting || wordSecondsLeft === 0} />
                     <button className="primary" disabled={wordSubmitting || wordSecondsLeft === 0}>{wordSubmitting ? 'Comprobando…' : 'Responder'}</button>
                   </form>
                   {wordFeedback && <p className="word-feedback" role="status">{wordFeedback}</p>}
@@ -596,14 +747,34 @@ function App() {
                 </div>
               )}
             </>}
-            {match.status === 'FINISHED' && <div className="result-card"><span className="eyebrow">RESULTADO</span><h2>{match.winnerId === account.id ? 'Ganaste la partida' : 'La partida terminó'}</h2>{match.gameType === 'COIN' && <div className="coin-outcome" key={`${match.id}-${match.coinResult}`} aria-live="polite"><div className="coin-result-face"><span>{match.coinResult === 'CARA' ? 'CARA' : 'SELLO'}</span></div><p>Resultado del lanzamiento</p></div>}<p>{match.gameType === 'COIN' ? `Salió ${match.coinResult?.toLowerCase()}. ` : ''}El saldo ficticio refleja el resultado de la partida.</p><div className="post-game"><div className="video-box">{videoUrl ? <video controls onEnded={completeRest} src={videoUrl} /> : <div><span>VIDEO INFORMATIVO</span><p>Falta agregar la URL del video.</p></div>}</div><div className="rest-box"><span className="eyebrow">PAUSA DE CINCO MINUTOS</span><strong>{videoComplete ? 'Pausa cancelada' : secondsLeft ? formatTime(secondsLeft) : '5:00'}</strong><p>{videoComplete ? 'Puedes continuar.' : 'Al terminar el video, la espera se cancela.'}</p><button className="primary" disabled={!videoComplete && secondsLeft > 0} onClick={() => { setMatch(null); setRestUntil(0); setChatMessages([]) }}>{!videoComplete && secondsLeft > 0 ? 'Descanso en curso' : 'Continuar'}</button></div></div></div>}
+            {match.status === 'FINISHED' && (
+              <div className="result-card">
+                <span className="eyebrow">RESULTADO</span>
+                <h2>{match.winnerId === account.id ? 'Ganaste la partida' : 'La partida terminó'}</h2>
+                {match.gameType === 'COIN' && <div className="coin-outcome" key={`${match.id}-${match.coinResult}`} aria-live="polite"><div className="coin-result-face"><span>{match.coinResult === 'CARA' ? 'CARA' : 'SELLO'}</span></div><p>Resultado del lanzamiento</p></div>}
+                <p>{match.gameType === 'COIN' ? `Salió ${match.coinResult?.toLowerCase()}. ` : ''}El saldo ficticio refleja el resultado de la partida.</p>
+                <div className="post-game">
+                  <RestChoicePanel
+                    secondsLeft={Math.max(secondsLeft, restSeconds)}
+                    choice={postGameChoice}
+                    setChoice={setPostGameChoice}
+                    video={selectedVideo}
+                    videoComplete={videoComplete}
+                    videoError={videoPlayerError}
+                    onChooseVideo={choosePauseVideo}
+                    onComplete={completeRest}
+                    onVideoEnded={() => setVideoComplete(true)}
+                    onVideoError={() => setVideoPlayerError('Este video no se pudo reproducir aquí. Prueba otro o espera el descanso.')}
+                  />
+                </div>
+              </div>
+            )}
           </div>
-          {match.status === 'ACTIVE' && <aside className="match-side"><div className="chat-card"><div className="card-heading"><div><span className="eyebrow">DURANTE LA PARTIDA</span><h2>Chat</h2></div></div><div className="chat-messages">{chatMessages.map((item) => <div className={`chat-message ${item.senderId === account.id ? 'mine' : ''}`} key={item.id}><span>{item.senderId === account.id ? 'Tú' : 'Contrincante'}</span><p>{chatMuted && item.senderId !== account.id ? 'Mensaje silenciado' : item.body}</p></div>)}{chatMessages.length === 0 && <p className="empty-chat">Los mensajes de esta partida aparecerán aquí.</p>}</div><form className="chat-form" onSubmit={sendMessage}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Escribe un mensaje" maxLength="1000" /><button aria-label="Enviar mensaje">↑</button></form><div className="chat-actions"><button onClick={() => setChatMuted(!chatMuted)}>{chatMuted ? 'Mostrar texto' : 'Silenciar texto'}</button><button onClick={blocked ? undefined : blockOpponent}>{blocked ? 'Jugador bloqueado' : 'Bloquear'}</button><button onClick={() => report('TEXT')}>Reportar texto</button></div><div className="voice-row"><button disabled={blocked} className={voiceOn ? 'voice-active' : ''} onClick={() => voiceOn ? (stopVoice(),setVoiceOn(false)) : startVoice()}>{voiceOn ? 'Desactivar voz' : 'Activar voz'}</button><button onClick={() => setMuted(!muted)}>{muted ? 'Activar audio' : 'Silenciar audio'}</button><button onClick={() => report('VOICE')}>Reportar voz</button><audio id="remote-audio" autoPlay muted={muted} /></div>{voiceOn && <p className="small-note">La voz requiere permiso de micrófono y configuración ICE para conectar redes.</p>}</div></aside>}
-        </section> : tab === 'reports' ? <section className="dashboard"><div className="section-heading"><div><span className="eyebrow">ADMINISTRACIÓN</span><h1>Reportes recibidos</h1></div><button className="secondary" onClick={() => setTab('games')}>Volver</button></div><div className="report-list">{adminReports.map((report) => <article className="report-row" key={report.id}><strong>{report.channel}</strong><span>Partida: {report.challengeId}</span><span>Reportado: {report.reportedPlayerId}</span><time>{new Date(report.createdAt).toLocaleString()}</time></article>)}{adminReports.length === 0 && <p className="empty-state">Todavía no hay reportes.</p>}</div></section> : <section className="dashboard"><div className="welcome-row"><div><span className="eyebrow">ESPACIO DE JUEGO</span><h1>Hola, {account?.name?.split(' ')[0]}.</h1><p>Elige una actividad y una apuesta en créditos ficticios.</p></div><div className="credit-card"><span>SALDO</span><strong>{(account?.credits || 0).toLocaleString('es-CO')}</strong><small>créditos ficticios</small></div></div><div className="limit-banner"><span>◷</span><p><strong>Hasta 90 minutos de partidas activas por cada periodo de 24 horas.</strong><br />Tiempo disponible: {formatTime(Math.max(0,5400-activeSeconds))}</p><button onClick={() => setTriggerOpen(true)}>Registrar desencadenante</button></div>{account?.restUntil && <div className="post-game"><div className="waiting-card rest-banner"><span className="eyebrow">DESCANSO DESPUÉS DE LA PARTIDA</span><h2>{restSeconds ? `Espera ${formatTime(restSeconds)}` : 'Puedes continuar'}</h2>{videoUrl && <video controls onEnded={completeRest} src={videoUrl} />}<p>{restSeconds ? 'Puedes ver el video informativo; si lo terminas, el descanso se cancela.' : 'El descanso terminó.'}</p><button className="primary" disabled={restSeconds > 0} onClick={() => setAccount({ ...account, restUntil: null })}>Continuar</button></div></div>}<div className="section-heading"><div><span className="eyebrow">ELIGE UNA ACTIVIDAD</span><h2>Juegos disponibles</h2></div>{account?.role === 'ADMIN' && <button className="secondary" onClick={showReports}>Ver reportes</button>}</div><div className="game-cards">{games.map((game,index) => <button className={`game-card game-${index}`} key={game.id} disabled={!game.available} onClick={() => setSelectedGame(game.id)}><span className="game-symbol">{['◉','▧','Aa'][index]}</span><span className="game-number">0{index+1}</span><h3>{game.name}</h3><p>{game.id === 'COIN' ? 'Elige cara o sello con igual probabilidad.' : game.id === 'PUZZLE' ? 'Resuelve la misma imagen que el contrincante.' : 'Responde antes que la otra persona.'}</p><span className="availability">{game.available ? 'Disponible' : 'Contenido por cargar'}</span></button>)}</div><div className="lobby-section"><div className="section-heading"><div><span className="eyebrow">RETO PÚBLICO</span><h2>Unirse a otra persona</h2></div><button className="text-button" onClick={() => run(loadLobby)}>Actualizar lista ↻</button></div><div className="lobby-list">{challenges.map((challenge) => <article className="lobby-row" key={challenge.id}><div className="game-symbol mini">{challenge.gameType === 'COIN' ? '◉' : challenge.gameType === 'PUZZLE' ? '▧' : 'Aa'}</div><div className="lobby-info"><strong>{challenge.creatorName}</strong><span>{gameNames[challenge.gameType]}</span></div><div className="lobby-stake"><span>APUESTA</span><strong>{challenge.stake.toLocaleString('es-CO')}</strong></div><button className="primary" disabled={busy} onClick={() => enterChallenge(challenge)}>Unirme</button></article>)}{challenges.length === 0 && <p className="empty-state">No hay retos esperando. Publica uno para que alguien pueda unirse.</p>}</div></div><div className="create-panel"><div><span className="eyebrow">PUBLICA UN RETO</span><h2>¿Qué quieres jugar?</h2><p className="muted">La apuesta se descuenta al comenzar.</p></div><div className="create-controls"><select value={selectedGame} onChange={(event) => setSelectedGame(event.target.value)}>{games.map((game) => <option key={game.id} value={game.id} disabled={!game.available}>{game.name}{!game.available ? ' — contenido pendiente' : ''}</option>)}</select><div className="stake-buttons">{STAKES.map((amount) => <button type="button" key={amount} className={stake === amount ? 'selected' : ''} onClick={() => setStake(amount)}>{amount.toLocaleString('es-CO')}</button>)}</div><button className="primary" disabled={busy || !games.find((game) => game.id === selectedGame)?.available || account?.credits < stake || activeSeconds >= 5400 || restSeconds > 0} onClick={createChallenge}>Publicar reto</button></div></div></section>}
+          {match.status === 'ACTIVE' && <aside className="match-side"><div className="chat-card"><div className="card-heading"><div><span className="eyebrow">DURANTE LA PARTIDA</span><h2>Chat</h2></div></div><div className="chat-messages">{chatMessages.map((item) => <div className={`chat-message ${item.senderId === account.id ? 'mine' : ''}`} key={item.id}><span>{item.senderId === account.id ? 'Tú' : 'Contrincante'}</span><p>{chatMuted && item.senderId !== account.id ? 'Mensaje silenciado' : item.body}</p></div>)}{chatMessages.length === 0 && <p className="empty-chat">Los mensajes de esta partida aparecerán aquí.</p>}</div><form className="chat-form" onSubmit={sendMessage}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Escribe un mensaje" maxLength="1000" /><button aria-label="Enviar mensaje">↑</button></form><div className="chat-actions"><button onClick={() => setChatMuted(!chatMuted)}>{chatMuted ? 'Mostrar texto' : 'Silenciar texto'}</button><button onClick={blocked ? undefined : blockOpponent}>{blocked ? 'Jugador bloqueado' : 'Bloquear'}</button><button onClick={() => report('TEXT')}>Reportar texto</button></div><div className="voice-row"><button disabled={blocked} className={voiceOn ? 'voice-active' : ''} onClick={() => voiceOn ? (stopVoice(),setVoiceOn(false)) : startVoice()}>{voiceOn ? 'Desactivar voz' : 'Activar voz'}</button><button onClick={() => setMuted(!muted)}>{muted ? 'Activar audio' : 'Silenciar audio'}</button><button onClick={() => report('VOICE')}>Reportar voz</button><audio id="remote-audio" autoPlay muted={muted} /></div>{voiceOn && <p className="small-note voice-status" role="status">{voiceStatus || "Permite el micrófono y espera la conexión del otro jugador."} Si la red bloquea la conexión, puede hacer falta TURN.</p>}</div></aside>}
+        </section> : tab === 'reports' ? <section className="dashboard"><div className="section-heading"><div><span className="eyebrow">ADMINISTRACIÓN</span><h1>Reportes recibidos</h1></div><button className="secondary" onClick={() => setTab('games')}>Volver</button></div><div className="report-list">{adminReports.map((report) => <article className="report-row" key={report.id}><strong>{report.channel}</strong><span>Partida: {report.challengeId}</span><span>Reportado: {report.reportedPlayerId}</span><time>{new Date(report.createdAt).toLocaleString()}</time></article>)}{adminReports.length === 0 && <p className="empty-state">Todavía no hay reportes.</p>}</div></section> : <section className="dashboard"><div className="welcome-row"><div><span className="eyebrow">ESPACIO DE JUEGO</span><h1>Hola, {account?.name?.split(' ')[0]}.</h1><p>Elige una actividad y una apuesta en créditos ficticios.</p></div><div className="credit-card"><span>SALDO</span><strong>{(account?.credits || 0).toLocaleString('es-CO')}</strong><small>créditos ficticios</small></div></div><div className="limit-banner"><span>◷</span><p><strong>Hasta 90 minutos de partidas activas por cada periodo de 24 horas.</strong><br />Tiempo disponible: {formatTime(Math.max(0,5400-activeSeconds))}</p><button onClick={() => setTriggerOpen(true)}>Registrar desencadenante</button></div>{account?.restUntil && <div className="post-game"><div className="waiting-card rest-banner"><span className="eyebrow">DESCANSO DESPUÉS DE LA PARTIDA</span><h2>{restSeconds ? `Espera ${formatTime(restSeconds)}` : 'Puedes continuar'}</h2><RestChoicePanel secondsLeft={restSeconds} choice={postGameChoice} setChoice={setPostGameChoice} video={selectedVideo} videoComplete={videoComplete} videoError={videoPlayerError} onChooseVideo={choosePauseVideo} onComplete={completeRest} onVideoEnded={() => setVideoComplete(true)} onVideoError={() => setVideoPlayerError('Este video no se pudo reproducir aquí. Prueba otro o espera el descanso.')} /></div></div>}<div className="section-heading"><div><span className="eyebrow">ELIGE UNA ACTIVIDAD</span><h2>Juegos disponibles</h2></div>{account?.role === 'ADMIN' && <button className="secondary" onClick={showReports}>Ver reportes</button>}</div><div className="game-cards">{games.map((game,index) => <button className={`game-card game-${index}`} key={game.id} disabled={!game.available} onClick={() => setSelectedGame(game.id)}><span className="game-symbol">{['◉','▧','Aa'][index]}</span><span className="game-number">0{index+1}</span><h3>{game.name}</h3><p>{game.id === 'COIN' ? 'Elige cara o sello con igual probabilidad.' : game.id === 'PUZZLE' ? 'Resuelve la misma imagen que el contrincante.' : 'Responde antes que la otra persona.'}</p><span className="availability">{game.available ? 'Disponible' : 'Contenido por cargar'}</span></button>)}</div><div className="lobby-section"><div className="section-heading"><div><span className="eyebrow">RETO PÚBLICO</span><h2>Unirse a otra persona</h2></div><button className="text-button" onClick={() => run(loadLobby)}>Actualizar lista ↻</button></div><div className="lobby-list">{challenges.map((challenge) => <article className="lobby-row" key={challenge.id}><div className="game-symbol mini">{challenge.gameType === 'COIN' ? '◉' : challenge.gameType === 'PUZZLE' ? '▧' : 'Aa'}</div><div className="lobby-info"><strong>{challenge.creatorName}</strong><span>{gameNames[challenge.gameType]}</span></div><div className="lobby-stake"><span>APUESTA</span><strong>{challenge.stake.toLocaleString('es-CO')}</strong></div><button className="primary" disabled={busy} onClick={() => enterChallenge(challenge)}>Unirme</button></article>)}{challenges.length === 0 && <p className="empty-state">No hay retos esperando. Publica uno para que alguien pueda unirse.</p>}</div></div><div className="create-panel"><div><span className="eyebrow">PUBLICA UN RETO</span><h2>¿Qué quieres jugar?</h2><p className="muted">La apuesta se descuenta al comenzar.</p></div><div className="create-controls"><select value={selectedGame} onChange={(event) => setSelectedGame(event.target.value)}>{games.map((game) => <option key={game.id} value={game.id} disabled={!game.available}>{game.name}{!game.available ? ' — contenido pendiente' : ''}</option>)}</select><div className="stake-buttons">{STAKES.map((amount) => <button type="button" key={amount} className={stake === amount ? 'selected' : ''} onClick={() => setStake(amount)}>{amount.toLocaleString('es-CO')}</button>)}</div><button className="primary" disabled={busy || !games.find((game) => game.id === selectedGame)?.available || account?.credits < stake || activeSeconds >= 5400 || restSeconds > 0} onClick={createChallenge}>Publicar reto</button></div></div></section>}
       </main>
       {triggerOpen && <div className="modal-backdrop" role="presentation"><form className="trigger-modal" onSubmit={saveTrigger}><button className="close-button" type="button" onClick={() => setTriggerOpen(false)}>×</button><span className="eyebrow">REGISTRO VOLUNTARIO</span><h2>¿Qué estaba pasando?</h2><p>Comparte solo lo que quieras. Puedes dejar preguntas en blanco.</p><label>¿Qué estaba pasando justo antes de que sintieras ganas de jugar?<textarea name="situationBefore" rows="2" /></label><label>¿Qué sentías o pensabas?<textarea name="thoughtsOrFeelings" rows="2" /></label><label>¿Qué tan fuerte era el impulso?<input name="urgeIntensity" maxLength="100" placeholder="Descríbelo con tus palabras" /></label><label>¿Qué hiciste después?<textarea name="actionAfter" rows="2" /></label><label>¿Algo te ayudó?<textarea name="helpfulness" rows="2" /></label><label>¿Sientes que este juego te ayuda?<textarea name="perceivedHelpfulnessOfGame" rows="2" /></label><button className="primary wide">Guardar registro</button></form></div>}
     </div>
   )
 }
 export default App
-
