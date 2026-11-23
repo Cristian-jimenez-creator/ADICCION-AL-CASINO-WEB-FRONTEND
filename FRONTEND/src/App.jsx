@@ -210,6 +210,10 @@ function App() {
   const refreshRef = useRef(null)
   const chatCursor = useRef(null)
   const puzzleServerState = useRef('')
+  const puzzleSyncTimer = useRef(null)
+  const puzzleSyncPending = useRef(null)
+  const puzzleSyncInFlight = useRef(false)
+  const puzzleScope = useRef('')
   const puzzleGridRef = useRef(null)
   const puzzleBeforePositions = useRef(null)
   const lobbyRequestSequence = useRef(0)
@@ -217,6 +221,7 @@ function App() {
   const coinAnimationStartedAt = useRef(0)
   const coinRevealTimer = useRef(null)
   const pendingCoinResult = useRef(null)
+  const seenCoinResult = useRef(null)
   const musicEngineRef = useRef(null)
   const presenceAnchor = useRef({ seconds: 0, at: Date.now() })
   const resultSoundMatch = useRef(null)
@@ -480,20 +485,37 @@ function App() {
   useEffect(() => {
     if (!token || !match?.id || !['ACTIVE', 'WAITING'].includes(match.status)) return
     let alive = true
+    let inFlight = false
     const refresh = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const updated = await request(`/api/challenges/${match.id}`, { token })
         if (!alive) return
-        if (updated.gameType === 'COIN' && updated.status === 'FINISHED' && match.status === 'ACTIVE') {
+        setError('')
+        const scope = `${updated.id}:${updated.roundNumber || 1}`
+        if (scope !== puzzleScope.current) {
+          puzzleScope.current = scope
+          if (puzzleSyncTimer.current) window.clearTimeout(puzzleSyncTimer.current)
+          puzzleSyncPending.current = null
+          puzzleServerState.current = ''
+        }
+        const coinRound = updated.status === 'FINISHED' ? (updated.roundNumber || 1) : (updated.roundNumber || 1) - 1
+        const coinEvent = updated.coinResult
+          ? `${coinRound}:${updated.coinResult}:${updated.lastRoundWinnerId || ''}` : null
+        const remoteCoinResult = updated.gameType === 'COIN' && coinEvent
+          && coinEvent !== seenCoinResult.current
+        if (remoteCoinResult) {
+          seenCoinResult.current = coinEvent
           const elapsed = coinAnimationStartedAt.current ? Date.now() - coinAnimationStartedAt.current : 0
           queueCoinReveal(updated, Math.max(0, COIN_TOSS_DURATION_MS - elapsed))
-          return
+          if (updated.status === 'FINISHED') return
         }
         if (updated.wordRound !== match.wordRound) setWordFeedback('')
         setMatch(updated)
         if (updated.status !== 'ACTIVE') return
         const boardState = JSON.stringify(updated.myPuzzleBoard || [])
-        if (boardState !== puzzleServerState.current) {
+        if (!puzzleSyncPending.current && !puzzleSyncInFlight.current && boardState !== puzzleServerState.current) {
           const grid = puzzleGridRef.current
           puzzleBeforePositions.current = grid ? new Map(Array.from(grid.querySelectorAll('[data-piece-id]')).map((tile) => [tile.dataset.pieceId, tile.getBoundingClientRect()])) : null
           puzzleServerState.current = boardState
@@ -503,13 +525,13 @@ function App() {
         const chat = await request(`/api/challenges/${match.id}/messages${after ? `?after=${encodeURIComponent(after)}` : ''}`, { token })
         if (alive && chat.length) { setChatMessages((items) => [...items, ...chat.filter((m) => !items.some((old) => old.id === m.id))]); chatCursor.current = chat.at(-1).createdAt }
         if (voiceRef.current.pc) await pollVoiceSignals(match.id, token, voiceRef)
-        await loadAccount(token)
       } catch (err) { if (alive) setError(err.message) }
+      finally { inFlight = false }
     }
     refresh()
     refreshRef.current = window.setInterval(refresh, 1200)
     return () => { alive = false; window.clearInterval(refreshRef.current) }
-  }, [token, match?.id, match?.status, match?.wordRound, loadAccount, queueCoinReveal])
+  }, [token, match?.id, match?.status, match?.wordRound, match?.roundNumber, queueCoinReveal])
 
   useLayoutEffect(() => {
     const before = puzzleBeforePositions.current
@@ -589,6 +611,7 @@ function App() {
     setBlocked(false)
     chatCursor.current = null
     puzzleServerState.current = ''
+    seenCoinResult.current = null
     const created = await run(() => request('/api/challenges', { token, method: 'POST', body: JSON.stringify({ gameType: selectedGame, stake }) }))
     if (created) { setMatch(created); setNotice('Reto publicado. Se descontarán los créditos cuando se una otra persona y comience la partida.'); }
     setBusy(false)
@@ -601,6 +624,7 @@ function App() {
     lobbyRequestSequence.current += 1
     chatCursor.current = null
     puzzleServerState.current = ''
+    seenCoinResult.current = null
     const joined = await run(() => request(`/api/challenges/${challenge.id}/join`, { token, method: 'POST', body: JSON.stringify({ stake: challenge.stake }) }))
     if (joined) { setMatch(joined); setChatMessages([]); }
     setBusy(false)
@@ -620,6 +644,8 @@ function App() {
     setCoinAnimating(true)
     const result = await run(() => request(`/api/challenges/${match.id}/coin`, { token, method: 'POST', body: JSON.stringify({ side }) }))
     if (result) {
+      const completedRound = result.status === 'FINISHED' ? (result.roundNumber || 1) : (result.roundNumber || 1) - 1
+      seenCoinResult.current = `${completedRound}:${result.coinResult || ''}:${result.lastRoundWinnerId || ''}`
       const elapsed = Date.now() - coinAnimationStartedAt.current
       queueCoinReveal(result, Math.max(0, COIN_TOSS_DURATION_MS - elapsed))
     } else {
@@ -630,7 +656,35 @@ function App() {
     setCoinSubmitting(false)
   }
 
-  async function submitPuzzle() { const result = await run(() => request(`/api/challenges/${match.id}/puzzle`, { token, method: 'PUT', body: JSON.stringify({ pieces: puzzle }) })); if (result) setMatch(result) }
+  async function syncPuzzleBoard(challengeId, round, pieces) {
+    if (puzzleSyncInFlight.current || !puzzleSyncPending.current) return
+    puzzleSyncInFlight.current = true
+    const pending = puzzleSyncPending.current
+    puzzleSyncPending.current = null
+    try {
+      const result = await request(`/api/challenges/${challengeId}/puzzle`, { token, method: 'PUT', body: JSON.stringify({ round, pieces: pending.pieces }) })
+      if (result && result.id === match?.id && result.roundNumber === round) {
+        puzzleServerState.current = JSON.stringify(pending.pieces)
+        setMatch(result)
+      }
+    } catch (err) {
+      if (match?.id === challengeId) setError(err.message)
+    } finally {
+      puzzleSyncInFlight.current = false
+      if (puzzleSyncPending.current) {
+        const next = puzzleSyncPending.current
+        puzzleSyncTimer.current = window.setTimeout(() => void syncPuzzleBoard(challengeId, next.round, next.pieces), 100)
+      }
+    }
+  }
+
+  function queuePuzzleSync(pieces) {
+    if (!match?.id || match.status !== 'ACTIVE') return
+    const round = match.roundNumber || 1
+    puzzleSyncPending.current = { round, pieces }
+    if (puzzleSyncTimer.current) window.clearTimeout(puzzleSyncTimer.current)
+    puzzleSyncTimer.current = window.setTimeout(() => void syncPuzzleBoard(match.id, round, pieces), 180)
+  }
 
   async function submitWord(event) {
     event.preventDefault()
@@ -641,7 +695,7 @@ function App() {
     if (result) {
       setMatch(result.challenge)
       setWordAnswer('')
-      if (result.correct) setWordFeedback('Respuesta correcta. La partida terminó.')
+      if (result.correct) setWordFeedback(result.challenge.status === 'FINISHED' ? 'Respuesta correcta. La partida terminó.' : 'Ganaste esta ronda; comienza la siguiente.')
       else if (result.roundExpired) setWordFeedback('Se terminó el tiempo. Ya comenzó otro reto.')
       else setWordFeedback('No coincide todavía. Puedes intentarlo otra vez.')
     }
@@ -720,6 +774,7 @@ function App() {
     const copy = [...puzzle]
     ;[copy[first], copy[second]] = [copy[second], copy[first]]
     setPuzzle(copy)
+    queuePuzzleSync(copy)
   }
 
   function movePiece(index) {
@@ -843,7 +898,7 @@ function App() {
           <div className="match-main"><div className="section-heading"><button className="back-button" onClick={leaveMatch}>← Salir de partida</button><span className={`status-pill ${match.status.toLowerCase()}`}>{match.status === 'WAITING' ? 'Esperando rival' : match.status === 'ACTIVE' ? 'Partida activa' : 'Partida terminada'}</span></div><h1>{gameNames[match.gameType]}</h1><p className="muted">Apuesta por jugador: <strong>{match.stake.toLocaleString('es-CO')} créditos</strong></p>
             {match.status === 'ACTIVE' && <div className="music-control" aria-label="Control de música del juego"><button className="secondary" type="button" onClick={toggleMusic}>{musicEnabled ? 'Pausar música' : 'Activar música'}</button><label>Volumen <input type="range" min="0" max="1" step="0.01" value={musicVolume} onChange={(event) => setMusicVolume(Number(event.target.value))} aria-label="Volumen de la música" /></label><span>{videoPlaying ? 'Música pausada durante el video' : musicEnabled ? `${gameNames[match.gameType]} · música ambiental` : 'Música apagada'}</span></div>}
             {match.status === 'WAITING' && <div className="waiting-card"><div className="pulse-dot"/><h2>Tu reto está en la fila</h2><p>Cuando alguien lo acepte con la misma apuesta, comenzará la partida y se descontarán los créditos.</p><button className="secondary" onClick={cancelChallenge}>Cancelar reto</button></div>}
-            {match.status === 'ACTIVE' && <><div className="versus"><div><span>TÚ</span><strong>{account?.name}</strong></div><span className="versus-mark">VS</span><div><span>CONTRINCANTE</span><strong>{match.creatorId === account.id ? match.opponentName : match.creatorName}</strong></div></div>
+          {match.status === 'ACTIVE' && <><div className="versus"><div><span>TÚ</span><strong>{account?.name}</strong></div><span className="versus-mark">VS</span><div><span>CONTRINCANTE</span><strong>{match.creatorId === account.id ? match.opponentName : match.creatorName}</strong></div></div><div className="round-score" role="status"><strong>Ronda {match.roundNumber || 1} de 3</strong><span>Marcador {match.creatorId === account.id ? match.creatorRoundWins || 0 : match.opponentRoundWins || 0} – {match.creatorId === account.id ? match.opponentRoundWins || 0 : match.creatorRoundWins || 0}</span></div>
               {match.gameType === 'COIN' && (
                 <div className="game-panel coin-stage">
                   <div className={`coin-scene ${coinAnimating ? 'is-tossing' : ''}`} aria-live="polite" aria-label={coinAnimating ? 'Un jugador lanza la moneda al aire; el resultado se revelará al caer.' : 'Moneda lista para lanzar'}>
@@ -856,6 +911,7 @@ function App() {
                   </div>
                   <h2>Elige cara o sello</h2>
                   <p>Ambas opciones tienen 50 % de probabilidad. Al elegir, se lanza una moneda virtual y el resultado aparece para los dos.</p>
+                  {match.coinResult && match.lastRoundWinnerId && <p className="round-result-note">En la ronda anterior cayó {match.coinResult.toLowerCase()}; {match.lastRoundWinnerId === account.id ? 'ganaste' : 'ganó tu contrincante'} esa ronda.</p>}
                   <div className="choice-row">
                     <button type="button" className="choice" disabled={coinSubmitting} onClick={() => chooseCoin('CARA')}>Cara</button>
                     <button type="button" className="choice" disabled={coinSubmitting} onClick={() => chooseCoin('SELLO')}>Sello</button>
@@ -908,7 +964,7 @@ function App() {
                           </button>
                         })}
                       </div>
-                      <button className="primary" disabled={busy || puzzle.length === 0} onClick={submitPuzzle}>Enviar mi avance</button>
+                      <p className="game-hint">Tu avance se comparte automáticamente en tiempo real.</p>
                     </div>
                     <div className="race-board opponent-board">
                       <div className="race-board-heading"><h3>Contrincante</h3><strong>{getPuzzleProgress(match.opponentPuzzleBoard || [])}%</strong></div>
@@ -938,7 +994,7 @@ function App() {
                       </div>
                     </div>
                   </div>
-                  <p className="game-hint" aria-live="polite">{selectedPuzzleIndex === null ? 'Tu avance se comparte al pulsar “Enviar mi avance”.' : 'Pieza seleccionada. Ahora elige dónde quieres colocarla.'}</p>
+                  <p className="game-hint" aria-live="polite">{selectedPuzzleIndex === null ? 'Selecciona una pieza y su destino. El contrincante verá cada movimiento.' : 'Pieza seleccionada. Ahora elige dónde quieres colocarla.'}</p>
                 </div>
               )}
               {match.gameType === 'WORD' && (
@@ -971,9 +1027,9 @@ function App() {
             {match.status === 'FINISHED' && (
               <div className="result-card">
                 <span className="eyebrow">RESULTADO</span>
-                <h2>{match.winnerId === account.id ? 'Ganaste la partida' : 'La partida terminó'}</h2>
+                <h2>{match.winnerId === account.id ? 'Ganaste la partida' : match.winnerId ? 'La partida terminó' : 'Empate'}</h2>
                 {match.gameType === 'COIN' && <div className="coin-outcome" key={`${match.id}-${match.coinResult}`} aria-live="polite"><div className="coin-result-face"><span>{match.coinResult === 'CARA' ? 'CARA' : 'SELLO'}</span></div><p>Resultado del lanzamiento</p></div>}
-                <p>{match.gameType === 'COIN' ? `Salió ${match.coinResult?.toLowerCase()}. ` : ''}El saldo ficticio refleja el resultado de la partida.</p>
+                <p>{match.gameType === 'COIN' && match.coinResult ? `Salió ${match.coinResult.toLowerCase()}. ` : ''}{match.winnerId ? 'Marcador final: ' : 'Se devolvieron las apuestas. Marcador final: '}{match.creatorId === account.id ? match.creatorRoundWins || 0 : match.opponentRoundWins || 0} – {match.creatorId === account.id ? match.opponentRoundWins || 0 : match.creatorRoundWins || 0}.</p>
                 <div className="post-game">
                   <RestChoicePanel
                     secondsLeft={Math.max(secondsLeft, restSeconds)}
