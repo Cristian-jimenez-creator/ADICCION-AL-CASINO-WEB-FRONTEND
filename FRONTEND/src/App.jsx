@@ -439,12 +439,16 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [match?.gameType, match?.status, musicEnabled, musicUnlocked, videoPlaying])
 
+  const resultMatchId = match?.id
+  const resultMatchStatus = match?.status
+  const resultWinnerId = match?.winnerId
+
   useEffect(() => {
-    if (!match || match.status !== 'FINISHED' || !musicUnlocked || resultSoundMatch.current === match.id) return
-    resultSoundMatch.current = match.id
+    if (!resultMatchId || resultMatchStatus !== 'FINISHED' || !musicUnlocked || resultSoundMatch.current === resultMatchId) return
+    resultSoundMatch.current = resultMatchId
     const engine = musicEngineRef.current
     if (!engine || engine.context.state === 'closed') return
-    const won = match.winnerId === account?.id
+    const won = resultWinnerId === account?.id
     const notes = won ? [523.25, 659.25, 783.99] : [392, 329.63, 261.63]
     notes.forEach((frequency, index) => {
       const start = engine.context.currentTime + index * 0.15
@@ -460,7 +464,7 @@ function App() {
       oscillator.start(start)
       oscillator.stop(start + 0.44)
     })
-  }, [match?.id, match?.status, match?.winnerId, account?.id, musicUnlocked])
+  }, [resultMatchId, resultMatchStatus, resultWinnerId, account?.id, musicUnlocked])
 
   useEffect(() => () => {
     const engine = musicEngineRef.current
