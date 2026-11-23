@@ -873,21 +873,40 @@ function App() {
                       <div className="race-board-heading"><h3>Tu tablero</h3><strong>{getPuzzleProgress(puzzle)}%</strong></div>
                       <div className="puzzle-progress" aria-label={`Tu avance: ${getPuzzleProgress(puzzle)} por ciento`}><span style={{ width: `${getPuzzleProgress(puzzle)}%` }} /></div>
                       <div ref={puzzleGridRef} className="puzzle-grid" style={{ '--cols': match.puzzleColumns }}>
-                        {puzzle.map((piece,index) => <button
-                          type="button"
-                          draggable
-                          key={piece}
-                          data-piece-id={piece}
-                          className={`puzzle-piece ${selectedPuzzleIndex === index ? 'is-selected' : ''} ${draggedIndex === index ? 'is-dragged' : ''}`}
-                          aria-label={`Pieza ${piece}, fila ${Math.floor(index / match.puzzleColumns) + 1}, columna ${index % match.puzzleColumns + 1}`}
-                          aria-pressed={selectedPuzzleIndex === index}
-                          style={{ backgroundImage: match.puzzleImageUrl ? `url(${match.puzzleImageUrl})` : 'none', backgroundSize: `${match.puzzleColumns * 100}% ${match.puzzleRows * 100}%`, backgroundPosition: `${((match.puzzlePieceSourceIndices?.[piece] % match.puzzleColumns) / (match.puzzleColumns - 1)) * 100}% ${Math.floor(match.puzzlePieceSourceIndices?.[piece] / match.puzzleColumns) / (match.puzzleRows - 1) * 100}%` }}
-                          onClick={() => movePiece(index)}
-                          onDragStart={() => { setDraggedIndex(index); setSelectedPuzzleIndex(null) }}
-                          onDragOver={(event) => event.preventDefault()}
-                          onDrop={() => { if (draggedIndex !== null) swapPuzzlePieces(draggedIndex, index); setDraggedIndex(null) }}
-                          onDragEnd={() => setDraggedIndex(null)}
-                        ><span className="sr-only">{piece}</span></button>)}
+                        {puzzle.map((piece,index) => {
+                          const columns = Number(match.puzzleColumns) || 3
+                          const rows = Number(match.puzzleRows) || 3
+                          const mappedSource = match.puzzlePieceSourceIndices?.[piece]
+                          const pieceNumber = Number.parseInt(String(piece).replace(/\D/g, ''), 10)
+                          const sourceIndex = Number.isInteger(mappedSource) ? mappedSource : Number.isFinite(pieceNumber) ? pieceNumber - 1 : index
+                          const sourceColumn = sourceIndex % columns
+                          const sourceRow = Math.floor(sourceIndex / columns)
+                          return <button
+                            type="button"
+                            draggable
+                            key={piece}
+                            data-piece-id={piece}
+                            className={`puzzle-piece ${selectedPuzzleIndex === index ? 'is-selected' : ''} ${draggedIndex === index ? 'is-dragged' : ''}`}
+                            aria-label={`Pieza ${piece}, fila ${Math.floor(index / columns) + 1}, columna ${index % columns + 1}`}
+                            aria-pressed={selectedPuzzleIndex === index}
+                            onClick={() => movePiece(index)}
+                            onDragStart={() => { setDraggedIndex(index); setSelectedPuzzleIndex(null) }}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={() => { if (draggedIndex !== null) swapPuzzlePieces(draggedIndex, index); setDraggedIndex(null) }}
+                            onDragEnd={() => setDraggedIndex(null)}
+                          >
+                            {match.puzzleImageUrl && <img
+                              className="puzzle-piece-image"
+                              src={match.puzzleImageUrl}
+                              alt=""
+                              draggable="false"
+                              onError={(event) => event.currentTarget.parentElement.classList.add('has-image-error')}
+                              style={{ width: `${columns * 100}%`, height: `${rows * 100}%`, left: `${sourceColumn * -100}%`, top: `${sourceRow * -100}%` }}
+                            />}
+                            <span className="puzzle-image-fallback" aria-hidden="true">🧩</span>
+                            <span className="sr-only">{piece}</span>
+                          </button>
+                        })}
                       </div>
                       <button className="primary" disabled={busy || puzzle.length === 0} onClick={submitPuzzle}>Enviar mi avance</button>
                     </div>
@@ -895,7 +914,27 @@ function App() {
                       <div className="race-board-heading"><h3>Contrincante</h3><strong>{getPuzzleProgress(match.opponentPuzzleBoard || [])}%</strong></div>
                       <div className="puzzle-progress" aria-label={`Avance del contrincante: ${getPuzzleProgress(match.opponentPuzzleBoard || [])} por ciento`}><span style={{ width: `${getPuzzleProgress(match.opponentPuzzleBoard || [])}%` }} /></div>
                       <div className="puzzle-grid opponent-grid" style={{ '--cols': match.puzzleColumns }}>
-                        {(match.opponentPuzzleBoard || []).map((piece) => <div key={piece} aria-label={`Pieza ${piece}`} style={{ backgroundImage: match.puzzleImageUrl ? `url(${match.puzzleImageUrl})` : 'none', backgroundSize: `${match.puzzleColumns * 100}% ${match.puzzleRows * 100}%`, backgroundPosition: `${((match.puzzlePieceSourceIndices?.[piece] % match.puzzleColumns) / (match.puzzleColumns - 1)) * 100}% ${Math.floor(match.puzzlePieceSourceIndices?.[piece] / match.puzzleColumns) / (match.puzzleRows - 1) * 100}%` }}><span className="sr-only">{piece}</span></div>)}
+                        {(match.opponentPuzzleBoard || []).map((piece,index) => {
+                          const columns = Number(match.puzzleColumns) || 3
+                          const rows = Number(match.puzzleRows) || 3
+                          const mappedSource = match.puzzlePieceSourceIndices?.[piece]
+                          const pieceNumber = Number.parseInt(String(piece).replace(/\D/g, ''), 10)
+                          const sourceIndex = Number.isInteger(mappedSource) ? mappedSource : Number.isFinite(pieceNumber) ? pieceNumber - 1 : index
+                          const sourceColumn = sourceIndex % columns
+                          const sourceRow = Math.floor(sourceIndex / columns)
+                          return <div className="puzzle-piece" key={piece} aria-label={`Pieza ${piece}`}>
+                            {match.puzzleImageUrl && <img
+                              className="puzzle-piece-image"
+                              src={match.puzzleImageUrl}
+                              alt=""
+                              draggable="false"
+                              onError={(event) => event.currentTarget.parentElement.classList.add('has-image-error')}
+                              style={{ width: `${columns * 100}%`, height: `${rows * 100}%`, left: `${sourceColumn * -100}%`, top: `${sourceRow * -100}%` }}
+                            />}
+                            <span className="puzzle-image-fallback" aria-hidden="true">🧩</span>
+                            <span className="sr-only">{piece}</span>
+                          </div>
+                        })}
                       </div>
                     </div>
                   </div>
