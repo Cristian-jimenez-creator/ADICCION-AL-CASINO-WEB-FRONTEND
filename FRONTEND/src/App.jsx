@@ -11,7 +11,7 @@ const COIN_TOSS_DURATION_MS = 2800
 const WORD_ROUND_SECONDS = 40
 const gameNames = { COIN: 'Moneda y probabilidad', PUZZLE: 'Carrera de rompecabezas', WORD: 'Palabra o acertijo' }
 const MUSIC_THEMES = {
-  // Melodies and harmonies are composed in-app; no recorded or copyrighted tracks are used.
+  // La música se sintetiza en la aplicación; no usa grabaciones comerciales.
   COIN: { beatMs: 520, wave: 'triangle', notes: [392, 493.88, 587.33, 493.88, 440, 523.25, 659.25, 523.25], chords: [[196, 246.94, 293.66], [220, 261.63, 329.63], [174.61, 220, 261.63], [196, 246.94, 293.66]] },
   PUZZLE: { beatMs: 430, wave: 'sine', notes: [523.25, 659.25, 783.99, 659.25, 587.33, 698.46, 880, 698.46], chords: [[130.81, 164.81, 196], [146.83, 185, 220], [174.61, 220, 261.63], [146.83, 185, 220]] },
   WORD: { beatMs: 560, wave: 'triangle', notes: [293.66, 349.23, 392, 349.23, 261.63, 329.63, 392, 329.63], chords: [[146.83, 174.61, 220], [130.81, 164.81, 196], [164.81, 196, 246.94], [130.81, 164.81, 196]] },
@@ -285,7 +285,7 @@ function App() {
       } finally {
         window.clearTimeout(timeoutId)
         if (!cancelled && !connected) {
-          // Retry after a short pause; the elapsed timer reflects actual wait time.
+          // Reintenta tras una pausa breve y mide el tiempo real de espera.
           retryTimer = window.setTimeout(() => { if (!cancelled) void checkBackend() }, 3000)
         }
       }
