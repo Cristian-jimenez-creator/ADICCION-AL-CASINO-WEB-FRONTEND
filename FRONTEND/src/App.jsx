@@ -1,21 +1,30 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 
+/** Lee la dirección del backend configurada en el entorno. */
 const configuredApi = import.meta.env.VITE_API_URL
+/** Define la dirección del backend para desarrollo y producción. */
 const API = import.meta.env.PROD
   ? (configuredApi && !configuredApi.includes('localhost') ? configuredApi : 'https://adiccion-al-casino-web-backend.onrender.com')
   : (configuredApi || 'http://localhost:8080')
+/** Apuestas ficticias permitidas en los retos. */
 const STAKES = [100, 300, 800, 2000]
+/** Tiempo inicial estimado para mostrar la espera del servidor. */
 const BACKEND_WAKE_ESTIMATE_SECONDS = 60
+/** Duración visual de la animación de lanzamiento de moneda. */
 const COIN_TOSS_DURATION_MS = 2800
+/** Duración de cada ronda del juego de palabras. */
 const WORD_ROUND_SECONDS = 40
+/** Nombres visibles de los minijuegos. */
 const gameNames = { COIN: 'Moneda y probabilidad', PUZZLE: 'Carrera de rompecabezas', WORD: 'Palabra o acertijo' }
+/** Parámetros de música generada para cada minijuego. */
 const MUSIC_THEMES = {
   // La música se sintetiza en la aplicación; no usa grabaciones comerciales.
   COIN: { beatMs: 520, wave: 'triangle', notes: [392, 493.88, 587.33, 493.88, 440, 523.25, 659.25, 523.25], chords: [[196, 246.94, 293.66], [220, 261.63, 329.63], [174.61, 220, 261.63], [196, 246.94, 293.66]] },
   PUZZLE: { beatMs: 430, wave: 'sine', notes: [523.25, 659.25, 783.99, 659.25, 587.33, 698.46, 880, 698.46], chords: [[130.81, 164.81, 196], [146.83, 185, 220], [174.61, 220, 261.63], [146.83, 185, 220]] },
   WORD: { beatMs: 560, wave: 'triangle', notes: [293.66, 349.23, 392, 349.23, 261.63, 329.63, 392, 329.63], chords: [[146.83, 174.61, 220], [130.81, 164.81, 196], [164.81, 196, 246.94], [130.81, 164.81, 196]] },
 }
+/** Videos elegibles para la pausa después de una partida. */
 const REST_VIDEOS = [
   { id: 'Om7Bq89RQgk', title: 'Pausa breve 1' },
   { id: 'zEWbXZdGHn8', title: 'Pausa breve 2' },
@@ -24,6 +33,7 @@ const REST_VIDEOS = [
   { id: 'moKY3LAUZE4', title: 'Pausa breve 5' },
 ]
 
+/** Carga y devuelve la API oficial del reproductor de YouTube. */
 function loadYouTubeIframeApi() {
   if (window.YT?.Player) return Promise.resolve(window.YT)
   if (!window.youtubeIframeApiPromise) {
@@ -44,11 +54,13 @@ function loadYouTubeIframeApi() {
   return window.youtubeIframeApiPromise
 }
 
+/** Elige un video de pausa evitando repetir el anterior. */
 function randomRestVideo(previousId = null) {
   const options = REST_VIDEOS.filter((video) => video.id !== previousId)
   return options[Math.floor(Math.random() * options.length)] || REST_VIDEOS[0]
 }
 
+/** Reproduce el video de pausa y comunica los eventos del reproductor. */
 function YouTubePlayer({ video, onEnded, onError, onPlaybackChange }) {
   const mountRef = useRef(null)
   const onEndedRef = useRef(onEnded)
@@ -85,6 +97,7 @@ function YouTubePlayer({ video, onEnded, onError, onPlaybackChange }) {
   return <div className="youtube-player" ref={mountRef} aria-label={`Video de pausa: ${video.title}`} />
 }
 
+/** Presenta las opciones para completar la pausa posterior a la partida. */
 function RestChoicePanel({ secondsLeft, choice, setChoice, video, videoComplete, videoError, onChooseVideo, onComplete, onVideoEnded, onVideoError, onPlaybackChange }) {
   return (
     <section className="rest-choice" aria-live="polite">
@@ -118,6 +131,7 @@ function RestChoicePanel({ secondsLeft, choice, setChoice, video, videoComplete,
   )
 }
 
+/** Envía solicitudes JSON al backend y procesa errores HTTP. */
 async function request(path, { token, ...options } = {}) {
   const response = await fetch(`${API}${path}`, {
     ...options,
@@ -131,8 +145,10 @@ async function request(path, { token, ...options } = {}) {
   return response.json()
 }
 
+/** Convierte segundos en el formato de minutos y segundos. */
 const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 
+/** Procesa las señales WebRTC pendientes de la partida. */
 async function pollVoiceSignals(id, authToken, voiceRef) {
   const signals = await request(`/api/challenges/${id}/voice-signals?after=${encodeURIComponent(voiceRef.current.last)}`, { token: authToken })
   for (const signal of signals) {
@@ -156,6 +172,7 @@ async function pollVoiceSignals(id, authToken, voiceRef) {
   }
 }
 
+/** Componente principal: administra sesión, retos, minijuegos y comunicación. */
 function App() {
   const [token, setToken] = useState(sessionStorage.getItem('sim-token') || '')
   const [account, setAccount] = useState(null)
@@ -226,6 +243,7 @@ function App() {
   const presenceAnchor = useRef({ seconds: 0, at: Date.now() })
   const resultSoundMatch = useRef(null)
 
+  /** Inicializa el audio del navegador tras la interacción del jugador. */
   function unlockMusic() {
     try {
       if (!musicEngineRef.current) {
@@ -247,6 +265,7 @@ function App() {
     }
   }
 
+  /** Activa o desactiva la música y guarda la preferencia. */
   function toggleMusic() {
     const next = !musicEnabled
     if (next) unlockMusic()
@@ -593,6 +612,7 @@ function App() {
     return () => window.removeEventListener('pagehide', forfeiture)
   }, [token, match?.id, match?.status])
 
+  /** Envía el registro o inicio de sesión y actualiza la sesión local. */
   async function authenticate(event) {
     event.preventDefault()
     if (backendStatus !== 'ready') return
@@ -605,6 +625,7 @@ function App() {
     setBusy(false)
   }
 
+  /** Publica un reto con el juego y la apuesta elegidos. */
   async function createChallenge() {
     unlockMusic()
     setBusy(true)
@@ -617,6 +638,7 @@ function App() {
     setBusy(false)
   }
 
+  /** Solicita unirse a un reto disponible. */
   async function enterChallenge(challenge) {
     unlockMusic()
     setBusy(true)
@@ -630,12 +652,14 @@ function App() {
     setBusy(false)
   }
 
+  /** Cancela el reto propio que aún no tiene contrincante. */
   async function cancelChallenge() {
     if (!match) return
     await run(() => request(`/api/challenges/${match.id}`, { token, method: 'DELETE' }))
     setMatch(null); setNotice('Reto cancelado. Aún no se había descontado la apuesta.')
   }
 
+  /** Envía la elección de cara o sello al backend. */
   async function chooseCoin(side) {
     if (coinSubmitting) return
     setCoinSubmitting(true)
@@ -656,6 +680,7 @@ function App() {
     setCoinSubmitting(false)
   }
 
+  /** Sincroniza el tablero actual del rompecabezas. */
   async function syncPuzzleBoard(challengeId, round, pieces) {
     if (puzzleSyncInFlight.current || !puzzleSyncPending.current) return
     puzzleSyncInFlight.current = true
@@ -678,6 +703,7 @@ function App() {
     }
   }
 
+  /** Agrupa cambios breves del tablero antes de sincronizarlos. */
   function queuePuzzleSync(pieces) {
     if (!match?.id || match.status !== 'ACTIVE') return
     const round = match.roundNumber || 1
@@ -686,6 +712,7 @@ function App() {
     puzzleSyncTimer.current = window.setTimeout(() => void syncPuzzleBoard(match.id, round, pieces), 180)
   }
 
+  /** Envía la respuesta escrita para la ronda de palabras. */
   async function submitWord(event) {
     event.preventDefault()
     if (wordSubmitting || !wordAnswer.trim()) return
@@ -702,28 +729,33 @@ function App() {
     setWordSubmitting(false)
   }
 
+  /** Solicita una pista compartida para la ronda actual. */
   async function revealWordHint() {
     const updated = await run(() => request(`/api/challenges/${match.id}/word-hint`, { token, method: 'POST' }))
     if (updated) setMatch(updated)
   }
 
+  /** Envía un mensaje al chat de la partida. */
   async function sendMessage(event) {
     event.preventDefault(); if (!message.trim()) return
     const sent = await run(() => request(`/api/challenges/${match.id}/messages`, { token, method: 'POST', body: JSON.stringify({ body: message }) }))
     if (sent) { setChatMessages((all) => [...all, sent]); setMessage('') }
   }
 
+  /** Solicita bloquear al contrincante. */
   async function blockOpponent() {
     const opponentId = match.creatorId === account.id ? match.opponentId : match.creatorId
     if (!opponentId) return
     if (await run(() => request('/api/players/block', { token, method: 'POST', body: JSON.stringify({ playerId: opponentId }) }))) { setBlocked(true); setVoiceOn(false); stopVoice(); setNotice('Jugador bloqueado para el chat y la voz. La partida continúa.') }
   }
 
+  /** Envía un reporte de chat o voz de la partida. */
   async function report(channel) {
     const result = await run(() => request(`/api/challenges/${match.id}/reports`, { token, method: 'POST', body: JSON.stringify({ channel }) }))
     if (result) setNotice(`Reporte de ${channel === 'VOICE' ? 'voz' : 'texto'} enviado al administrador.`)
   }
 
+  /** Guarda una situación desencadenante informada por el jugador. */
   async function saveTrigger(event) {
     event.preventDefault()
     const body = Object.fromEntries(new FormData(event.currentTarget).entries())
@@ -731,6 +763,7 @@ function App() {
     if (saved) { setTriggerOpen(false); setNotice('Tu registro voluntario quedó guardado.') }
   }
 
+  /** Informa el final de la pausa obligatoria. */
   async function completeRest() {
     if (postGameChoice === 'video' && !videoComplete) return
     if (postGameChoice === 'wait' && Math.max(secondsLeft, restSeconds) > 0) return
@@ -747,6 +780,7 @@ function App() {
     }
   }
 
+  /** Selecciona un video aleatorio para la pausa. */
   function choosePauseVideo() {
     setSelectedVideo((current) => randomRestVideo(current?.id))
     setVideoComplete(false)
@@ -755,11 +789,13 @@ function App() {
     setPostGameChoice('video')
   }
 
+  /** Carga los reportes disponibles para revisión. */
   async function showReports() {
     const reports = await run(() => request('/api/admin/reports', { token }))
     if (reports) { setAdminReports(reports); setTab('reports') }
   }
 
+  /** Abandona la partida y limpia su estado en pantalla. */
   async function leaveMatch() {
     if (match?.status === 'ACTIVE') {
       const result = await run(() => request(`/api/challenges/${match.id}/forfeit`, { token, method: 'POST' }))
@@ -767,6 +803,7 @@ function App() {
     } else if (match?.status === 'WAITING') await cancelChallenge()
   }
 
+  /** Intercambia dos piezas seleccionadas del rompecabezas. */
   function swapPuzzlePieces(first, second) {
     if (first === second || first < 0 || second < 0 || first >= puzzle.length || second >= puzzle.length) return
     const grid = puzzleGridRef.current
@@ -777,6 +814,7 @@ function App() {
     queuePuzzleSync(copy)
   }
 
+  /** Mueve una pieza del tablero al destino elegido. */
   function movePiece(index) {
     if (selectedPuzzleIndex === null) {
       setSelectedPuzzleIndex(index)
@@ -786,12 +824,14 @@ function App() {
     setSelectedPuzzleIndex(null)
   }
 
+  /** Calcula el avance del tablero del jugador. */
   function getPuzzleProgress(board = []) {
     const sourceIndices = match?.puzzlePieceSourceIndices || {}
     if (!board.length) return 0
     return Math.round((board.filter((piece, index) => sourceIndices[piece] === index).length / board.length) * 100)
   }
 
+  /** Cierra la sesión y limpia los datos de autenticación. */
   async function signOut() {
     if (match?.status === 'ACTIVE') {
       await run(() => request(`/api/challenges/${match.id}/forfeit`, { token, method: 'POST' }))
@@ -808,6 +848,7 @@ function App() {
     setBackendWaitSeconds(BACKEND_WAKE_ESTIMATE_SECONDS)
   }
 
+  /** Solicita acceso al micrófono y prepara el canal de voz. */
   function startVoice() {
     setVoiceOn(true)
     setVoiceStatus('Conectando al micrófono…')
@@ -820,6 +861,7 @@ function App() {
     })
   }
 
+  /** Negocia la conexión WebRTC con el contrincante. */
   async function connectVoice() {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('El navegador no permite usar el micrófono. Abre la app con HTTPS y permite el acceso al micrófono.')
     const fallbackIceServers = [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -850,10 +892,12 @@ function App() {
     setVoiceStatus('Micrófono listo; esperando a que se conecte la otra persona…')
   }
 
+  /** Envía una señal de negociación de voz al backend. */
   async function postSignal(id, kind, payload) {
     await request(`/api/challenges/${id}/voice-signals`, { token, method: 'POST', body: JSON.stringify({ kind, payload: JSON.stringify(payload) }) })
   }
 
+  /** Cierra el canal de voz y libera el micrófono. */
   function stopVoice() {
     voiceRef.current.pc?.close(); voiceRef.current.stream?.getTracks().forEach((track) => track.stop())
     const audio = document.getElementById('remote-audio')

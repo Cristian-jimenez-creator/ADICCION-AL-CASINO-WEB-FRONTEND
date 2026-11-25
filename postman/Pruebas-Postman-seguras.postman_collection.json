@@ -1,0 +1,130 @@
+{
+  "info": {
+    "name": "Pruebas seguras - Simulador",
+    "description": "Cinco verificaciones de la API desplegada ejecutadas en Postman. No crean cuentas, retos ni partidas; las solicitudes inválidas se rechazan antes de modificar datos.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "apiUrl",
+      "value": "https://adiccion-al-casino-web-backend.onrender.com"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Catálogo de juegos",
+      "request": {
+        "method": "GET",
+        "url": "{{apiUrl}}/api/games"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Responde HTTP 200', () => pm.response.to.have.status(200));",
+              "const games = pm.response.json();",
+              "pm.test('Devuelve los tres minijuegos', () => pm.expect(games.map(game => game.id)).to.have.members(['COIN', 'PUZZLE', 'WORD']));",
+              "pm.test('Cada juego incluye nombre y disponibilidad', () => games.forEach(game => { pm.expect(game.name).to.be.a('string').and.not.empty; pm.expect(game.available).to.be.a('boolean'); }));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Perfil rechaza solicitud sin sesión",
+      "request": {
+        "method": "GET",
+        "url": "{{apiUrl}}/api/auth/me"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Bloquea acceso sin token (401 o 403)', () => pm.expect([401, 403]).to.include(pm.response.code));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Retos esperando rechaza solicitud sin sesión",
+      "request": {
+        "method": "GET",
+        "url": "{{apiUrl}}/api/challenges/waiting"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Bloquea consulta sin token (401 o 403)', () => pm.expect([401, 403]).to.include(pm.response.code));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Login rechaza usuario inexistente",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"postman.inexistente.20261125@gmail.com\",\n  \"password\": \"Clave-De-Prueba-No-Real\"\n}"
+        },
+        "url": "{{apiUrl}}/api/auth/login"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Rechaza credenciales no registradas con HTTP 400', () => pm.response.to.have.status(400));",
+              "pm.test('Devuelve mensaje de error sin emitir token', () => { const body = pm.response.json(); pm.expect(body.message).to.be.a('string').and.not.empty; pm.expect(body).not.to.have.property('token'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Registro rechaza correo que no es Gmail",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Prueba Postman\",\n  \"email\": \"prueba.postman@outlook.com\",\n  \"password\": \"Clave-De-Prueba-No-Real\",\n  \"howKnown\": \"Prueba automatizada\"\n}"
+        },
+        "url": "{{apiUrl}}/api/auth/register"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Rechaza el registro con HTTP 400', () => pm.response.to.have.status(400));",
+              "pm.test('Explica que se requiere Gmail', () => pm.expect(pm.response.json().message).to.include('Gmail'));"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
